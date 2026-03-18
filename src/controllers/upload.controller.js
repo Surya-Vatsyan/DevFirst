@@ -2,6 +2,7 @@
 
 const logger = require('../utils/logger');
 const zipExtractionService = require('../services/zip-extraction.service');
+const codebaseAnalyzerService = require('../services/codebase-analyzer.service');
 
 const uploadFile = async (req, res, next) => {
   try {
@@ -15,6 +16,10 @@ const uploadFile = async (req, res, next) => {
       zipFilePath: req.file.path,
       requestId: req.requestId
     });
+    const report = await codebaseAnalyzerService.analyzeExtractedFolder({
+      extractionFolder: extractionResult.extractionFolder,
+      requestId: req.requestId
+    });
 
     logger.info('ZIP file uploaded', {
       requestId: req.requestId,
@@ -26,13 +31,14 @@ const uploadFile = async (req, res, next) => {
 
     res.status(201).json({
       success: true,
-      message: 'File uploaded and extracted successfully',
+      message: 'File uploaded, extracted, and analyzed successfully',
       data: {
         fileName: req.file.filename,
         size: req.file.size,
         extractionFolder: extractionResult.extractionFolder,
         extractedFiles: extractionResult.extractedFiles,
-        totalFiles: extractionResult.totalFiles
+        totalFiles: extractionResult.totalFiles,
+        report
       },
       requestId: req.requestId
     });
