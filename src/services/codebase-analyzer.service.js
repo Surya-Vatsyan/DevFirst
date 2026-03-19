@@ -5,6 +5,9 @@ const path = require('path');
 const logger = require('../utils/logger');
 
 const LARGE_FILE_THRESHOLD_BYTES = 1024 * 1024;
+const MANY_LINES_THRESHOLD = 200;
+const MAX_SELECTED_FILES = 5;
+const KEYWORD_REGEX = /\b(error|try|catch)\b/i;
 const projectRootDirectory = path.join(__dirname, '..', '..');
 const uploadsRootDirectory = path.join(projectRootDirectory, 'uploads');
 
@@ -69,6 +72,45 @@ const getAllFilesRecursively = async (directoryPath) => {
   return allFiles;
 };
 
+const countFileLines = (fileContent) => {
+  if (!fileContent) {
+    return 0;
+  }
+
+  return fileContent.split(/\r?\n/).length;
+};
+
+const addSelectionReason = (selectedFileReasons, relativePath, reason) => {
+  if (!selectedFileReasons.has(relativePath)) {
+    selectedFileReasons.set(relativePath, new Set());
+  }
+
+  selectedFileReasons.get(relativePath).add(reason);
+};
+
+const buildSelectedFiles = (selectedFileReasons) => {
+  const selectedFiles = [];
+  const selectedFileSet = new Set();
+  const reasonPriority = ['large', 'manyLines', 'keywords'];
+
+  for (const reason of reasonPriority) {
+    for (const [relativePath, reasons] of selectedFileReasons.entries()) {
+      if (selectedFiles.length >= MAX_SELECTED_FILES) {
+        return selectedFiles;
+      }
+
+      if (!reasons.has(reason) || selectedFileSet.has(relativePath)) {
+        continue;
+      }
+
+      selectedFiles.push(relativePath);
+      selectedFileSet.add(relativePath);
+    }
+  }
+
+  return selectedFiles;
+};
+
 const analyzeExtractedFolder = async ({ extractionFolder, requestId }) => {
   const extractionDirectory = resolveExtractionDirectory(extractionFolder);
 
@@ -90,8 +132,10 @@ const analyzeExtractedFolder = async ({ extractionFolder, requestId }) => {
     tsFiles: 0,
     jsonFiles: 0,
     largeFiles: [],
-    emptyFiles: []
+    emptyFiles: [],
+    selectedFiles: []
   };
+  const selectedFileReasons = new Map();
 
   for (const absoluteFilePath of files) {
     const relativePath = toPortableRelativePath(extractionDirectory, absoluteFilePath);
@@ -114,15 +158,44 @@ const analyzeExtractedFolder = async ({ extractionFolder, requestId }) => {
 
     if (fileStats.size > LARGE_FILE_THRESHOLD_BYTES) {
       report.largeFiles.push(relativePath);
+      addSelectionReason(selectedFileReasons, relativePath, 'large');
+    }
+
+    if (fileStats.size === 0) {
+      continue;
+    }
+
+    let fileContent;
+    try {
+      fileContent = await fsPromises.readFile(absoluteFilePath, 'utf8');
+    } catch (error) {
+      logger.warn('Failed to read file during analysis', {
+        requestId,
+        path: relativePath,
+        errorMessage: error.message
+      });
+      continue;
+    }
+
+    const lineCount = countFileLines(fileContent);
+    if (lineCount > MANY_LINES_THRESHOLD) {
+      addSelectionReason(selectedFileReasons, relativePath, 'manyLines');
+    }
+
+    if (KEYWORD_REGEX.test(fileContent)) {
+      addSelectionReason(selectedFileReasons, relativePath, 'keywords');
     }
   }
+
+  report.selectedFiles = buildSelectedFiles(selectedFileReasons);
 
   logger.info('Codebase analysis completed', {
     requestId,
     extractionFolder,
     totalFiles: report.totalFiles,
     largeFiles: report.largeFiles.length,
-    emptyFiles: report.emptyFiles.length
+    emptyFiles: report.emptyFiles.length,
+    selectedFiles: report.selectedFiles.length
   });
 
   return report;
