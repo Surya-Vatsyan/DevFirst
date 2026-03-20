@@ -3,6 +3,25 @@
 const aiService = require('../services/ai.service');
 const logger = require('../utils/logger');
 
+const SEVERITY_PRIORITY = {
+  high: 3,
+  medium: 2,
+  low: 1
+};
+
+const sortIssuesBySeverity = (issues) => {
+  if (!Array.isArray(issues)) {
+    return [];
+  }
+
+  return [...issues].sort((leftIssue, rightIssue) => {
+    const leftSeverity = leftIssue && typeof leftIssue.severity === 'string' ? leftIssue.severity.toLowerCase() : 'low';
+    const rightSeverity = rightIssue && typeof rightIssue.severity === 'string' ? rightIssue.severity.toLowerCase() : 'low';
+
+    return (SEVERITY_PRIORITY[rightSeverity] || 0) - (SEVERITY_PRIORITY[leftSeverity] || 0);
+  });
+};
+
 const explainCodeSnippet = async (req, res, next) => {
   try {
     const codeSnippet = req.body ? req.body.codeSnippet : undefined;
@@ -19,10 +38,20 @@ const explainCodeSnippet = async (req, res, next) => {
     });
 
     const debuggerOutput = await aiService.explainCode(codeSnippet);
+    const responseData = {
+      summary: debuggerOutput.summary,
+      issues: sortIssuesBySeverity(debuggerOutput.issues),
+      fixes: debuggerOutput.fixes,
+      aiReliable: debuggerOutput.aiReliable
+    };
+
+    if (!debuggerOutput.aiReliable && typeof debuggerOutput.warning === 'string') {
+      responseData.warning = debuggerOutput.warning;
+    }
 
     res.status(200).json({
       success: true,
-      data: debuggerOutput,
+      data: responseData,
       requestId: req.requestId
     });
   } catch (error) {

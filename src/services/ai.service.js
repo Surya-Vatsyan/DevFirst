@@ -5,6 +5,8 @@ const logger = require('../utils/logger');
 
 const MAX_SNIPPET_CHARACTERS = 8000;
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-5';
+const SEVERITY_VALUES = new Set(['low', 'medium', 'high']);
+const UNRELIABLE_WARNING_MESSAGE = 'AI output may be unreliable. Please review carefully.';
 const EXPLANATION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -16,7 +18,23 @@ const EXPLANATION_SCHEMA = {
     issues: {
       type: 'array',
       items: {
-        type: 'string'
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          issue: {
+            type: 'string',
+            minLength: 1
+          },
+          severity: {
+            type: 'string',
+            enum: ['low', 'medium', 'high']
+          },
+          confidence: {
+            type: 'string',
+            enum: ['low', 'medium', 'high']
+          }
+        },
+        required: ['issue', 'severity', 'confidence']
       }
     },
     fixes: {
@@ -33,8 +51,16 @@ let openAIClient;
 
 const buildFallbackExplanation = () => ({
   summary: 'Unable to generate reliable debugger analysis for this snippet right now.',
-  issues: ['AI response could not be validated as structured JSON.'],
-  fixes: ['Try again with a smaller, focused snippet.']
+  issues: [
+    {
+      issue: 'AI response could not be validated as structured JSON.',
+      severity: 'medium',
+      confidence: 'low'
+    }
+  ],
+  fixes: ['Try again with a smaller, focused snippet.'],
+  aiReliable: false,
+  warning: UNRELIABLE_WARNING_MESSAGE
 });
 
 const throwBadRequest = (message) => {
@@ -88,20 +114,96 @@ const extractExplanationText = (response) => {
 
 const isStringArray = (value) => Array.isArray(value) && value.every((item) => typeof item === 'string');
 
-const validateStructuredExplanation = (value) => {
+const normalizeIssueObject = (issueValue) => {
+  if (typeof issueValue === 'string') {
+    const normalizedIssueText = issueValue.trim();
+    if (!normalizedIssueText) {
+      return null;
+    }
+
+    return {
+      issue: normalizedIssueText,
+      severity: 'medium',
+      confidence: 'low'
+    };
+  }
+
+  if (!issueValue || typeof issueValue !== 'object' || Array.isArray(issueValue)) {
+    return null;
+  }
+
+  if (typeof issueValue.issue !== 'string' || issueValue.issue.trim().length === 0) {
+    return null;
+  }
+
+  const severity = typeof issueValue.severity === 'string' ? issueValue.severity.toLowerCase() : '';
+  const confidence = typeof issueValue.confidence === 'string' ? issueValue.confidence.toLowerCase() : '';
+
+  if (!SEVERITY_VALUES.has(severity) || !SEVERITY_VALUES.has(confidence)) {
+    return null;
+  }
+
+  return {
+    issue: issueValue.issue.trim(),
+    severity,
+    confidence
+  };
+};
+
+const normalizeStructuredExplanation = (value) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return false;
+    return null;
   }
 
   if (typeof value.summary !== 'string' || value.summary.trim().length === 0) {
-    return false;
+    return null;
   }
 
-  if (!isStringArray(value.issues) || !isStringArray(value.fixes)) {
-    return false;
+  if (!Array.isArray(value.issues) || !isStringArray(value.fixes)) {
+    return null;
   }
 
-  return true;
+  const normalizedIssues = [];
+  for (const issueValue of value.issues) {
+    const normalizedIssue = normalizeIssueObject(issueValue);
+    if (!normalizedIssue) {
+      return null;
+    }
+    normalizedIssues.push(normalizedIssue);
+  }
+
+  return {
+    summary: value.summary.trim(),
+    issues: normalizedIssues,
+    fixes: value.fixes
+  };
+};
+
+const buildReliableResponse = (normalizedOutput, fallbackUsed) => {
+  if (fallbackUsed) {
+    return {
+      ...normalizedOutput,
+      aiReliable: false,
+      warning: UNRELIABLE_WARNING_MESSAGE
+    };
+  }
+
+  const totalIssues = normalizedOutput.issues.length;
+  const lowConfidenceIssues = normalizedOutput.issues.filter((issue) => issue.confidence === 'low').length;
+  const aiReliable = totalIssues === 0 || lowConfidenceIssues <= totalIssues / 2;
+
+  if (!aiReliable) {
+    return {
+      ...normalizedOutput,
+      aiReliable: false,
+      warning: UNRELIABLE_WARNING_MESSAGE
+    };
+  }
+
+  return {
+    ...normalizedOutput,
+    aiReliable: true
+  };
 };
 
 const explainCode = async (codeSnippet) => {
@@ -134,7 +236,8 @@ const explainCode = async (codeSnippet) => {
           role: 'user',
           content:
             `Analyze this code snippet and return a JSON object with exactly these keys: ` +
-            `"summary" (string), "issues" (string array), "fixes" (string array).\n\n${trimmedSnippet}`
+            `"summary" (string), "issues" (array of objects with issue/severity/confidence), ` +
+            `"fixes" (string array). For each issue object: "severity" and "confidence" must be one of low|medium|high.\n\n${trimmedSnippet}`
         }
       ],
       text: {
@@ -167,18 +270,15 @@ const explainCode = async (codeSnippet) => {
       return buildFallbackExplanation();
     }
 
-    if (!validateStructuredExplanation(parsedOutput)) {
+    const normalizedOutput = normalizeStructuredExplanation(parsedOutput);
+    if (!normalizedOutput) {
       logger.warn('AI returned invalid structured response shape', {
         fallbackUsed: true
       });
       return buildFallbackExplanation();
     }
 
-    return {
-      summary: parsedOutput.summary.trim(),
-      issues: parsedOutput.issues,
-      fixes: parsedOutput.fixes
-    };
+    return buildReliableResponse(normalizedOutput, false);
   } catch (error) {
     logger.error('OpenAI explainCode request failed', {
       statusCode: typeof error.status === 'number' ? error.status : undefined,

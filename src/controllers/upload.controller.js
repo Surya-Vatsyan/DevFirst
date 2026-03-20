@@ -3,6 +3,7 @@
 const logger = require('../utils/logger');
 const zipExtractionService = require('../services/zip-extraction.service');
 const codebaseAnalyzerService = require('../services/codebase-analyzer.service');
+const aiOrchestratorService = require('../services/ai-orchestrator.service');
 
 const uploadFile = async (req, res, next) => {
   try {
@@ -20,13 +21,19 @@ const uploadFile = async (req, res, next) => {
       extractionFolder: extractionResult.extractionFolder,
       requestId: req.requestId
     });
+    const aiReport = await aiOrchestratorService.runDebuggerPipeline({
+      extractionFolder: extractionResult.extractionFolder,
+      selectedFiles: report.selectedFiles,
+      requestId: req.requestId
+    });
 
     logger.info('ZIP file uploaded', {
       requestId: req.requestId,
       fileName: req.file.filename,
       mimeType: req.file.mimetype,
       size: req.file.size,
-      extractedFiles: extractionResult.totalFiles
+      extractedFiles: extractionResult.totalFiles,
+      selectedFiles: report.selectedFiles.length
     });
 
     res.status(201).json({
@@ -38,7 +45,8 @@ const uploadFile = async (req, res, next) => {
         extractionFolder: extractionResult.extractionFolder,
         extractedFiles: extractionResult.extractedFiles,
         totalFiles: extractionResult.totalFiles,
-        report
+        report,
+        aiReport
       },
       requestId: req.requestId
     });
