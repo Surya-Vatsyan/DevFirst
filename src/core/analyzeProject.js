@@ -13,6 +13,22 @@ const MAX_AI_FILES = 5;
 const MAX_AI_SNIPPET_CHARACTERS = 8000;
 const SEVERITY_VALUES = new Set(['low', 'medium', 'high']);
 const CONFIDENCE_VALUES = new Set(['low', 'medium', 'high']);
+const DEFAULT_CONTEXT = 'No taint flow context available.';
+const DEFAULT_SUGGESTION = 'Review and remediate this issue.';
+const DEFAULT_MESSAGE = 'Issue detected.';
+const DEFAULT_FILE = 'unknown';
+
+const buildDefaultSeveritySummary = () => ({
+  high: 0,
+  medium: 0,
+  low: 0
+});
+
+const buildDefaultSummary = () => ({
+  totalFiles: 0,
+  issuesFound: 0,
+  severity: buildDefaultSeveritySummary()
+});
 
 const buildDefaultExecution = () => ({
   attempted: false,
@@ -55,15 +71,95 @@ const normalizeConfidence = (value) => {
   return CONFIDENCE_VALUES.has(normalized) ? normalized : 'low';
 };
 
-const enhanceFindingWithTaintMetadata = (finding) => ({
-  ...finding,
-  severity: normalizeSeverity(finding.severity),
-  confidence: normalizeConfidence(finding.confidence),
-  context:
-    typeof finding.context === 'string' && finding.context.trim().length > 0
-      ? finding.context
-      : 'No taint flow context available.'
-});
+const normalizeFinding = (finding = {}) => {
+  const normalized = finding && typeof finding === 'object' && !Array.isArray(finding) ? finding : {};
+
+  return {
+    ...normalized,
+    severity: normalizeSeverity(normalized.severity),
+    confidence: normalizeConfidence(normalized.confidence),
+    file:
+      typeof normalized.file === 'string' && normalized.file.trim().length > 0
+        ? normalized.file
+        : DEFAULT_FILE,
+    message:
+      typeof normalized.message === 'string' && normalized.message.trim().length > 0
+        ? normalized.message
+        : DEFAULT_MESSAGE,
+    context:
+      typeof normalized.context === 'string' && normalized.context.trim().length > 0 ? normalized.context : DEFAULT_CONTEXT,
+    suggestion:
+      typeof normalized.suggestion === 'string' && normalized.suggestion.trim().length > 0
+        ? normalized.suggestion
+        : DEFAULT_SUGGESTION
+  };
+};
+
+const buildSeveritySummary = (findings) => {
+  const severitySummary = buildDefaultSeveritySummary();
+
+  for (const finding of findings) {
+    const severity = normalizeSeverity(finding.severity);
+    severitySummary[severity] += 1;
+  }
+
+  return severitySummary;
+};
+
+const normalizeExecution = (execution) => {
+  if (!execution || typeof execution !== 'object' || Array.isArray(execution)) {
+    return buildDefaultExecution();
+  }
+
+  return {
+    attempted: Boolean(execution.attempted),
+    success: Boolean(execution.success),
+    error: typeof execution.error === 'string' ? execution.error : '',
+    stdout: typeof execution.stdout === 'string' ? execution.stdout : '',
+    stderr: typeof execution.stderr === 'string' ? execution.stderr : '',
+    executionTime: Number.isFinite(execution.executionTime) && execution.executionTime >= 0 ? execution.executionTime : 0,
+    entryFile: typeof execution.entryFile === 'string' ? execution.entryFile : null
+  };
+};
+
+const normalizeAiReport = (aiReport) => {
+  if (!aiReport || typeof aiReport !== 'object' || Array.isArray(aiReport)) {
+    return buildDefaultAiReport();
+  }
+
+  return {
+    summary: typeof aiReport.summary === 'string' ? aiReport.summary : buildDefaultAiReport().summary,
+    files: Array.isArray(aiReport.files) ? aiReport.files : [],
+    fixes: Array.isArray(aiReport.fixes) ? aiReport.fixes : [],
+    aiUsed: Boolean(aiReport.aiUsed),
+    fallbackUsed: Boolean(aiReport.fallbackUsed),
+    errors: Array.isArray(aiReport.errors) ? aiReport.errors.map((errorValue) => String(errorValue)) : []
+  };
+};
+
+const normalizeResult = ({ success, error, summary, findings, execution, aiReport }) => {
+  const normalizedFindings = Array.isArray(findings) ? findings.map((finding) => normalizeFinding(finding)) : [];
+  const resolvedSummary = summary && typeof summary === 'object' && !Array.isArray(summary) ? summary : {};
+  const totalFiles =
+    Number.isInteger(resolvedSummary.totalFiles) && resolvedSummary.totalFiles >= 0 ? resolvedSummary.totalFiles : 0;
+  const issuesFound =
+    Number.isInteger(resolvedSummary.issuesFound) && resolvedSummary.issuesFound >= 0
+      ? resolvedSummary.issuesFound
+      : normalizedFindings.length;
+
+  return {
+    success: Boolean(success),
+    error: typeof error === 'string' && error.trim().length > 0 ? error : null,
+    summary: {
+      totalFiles,
+      issuesFound,
+      severity: buildSeveritySummary(normalizedFindings)
+    },
+    findings: normalizedFindings,
+    execution: normalizeExecution(execution),
+    aiReport: normalizeAiReport(aiReport)
+  };
+};
 
 const validateProjectPath = async (projectPath) => {
   if (typeof projectPath !== 'string' || projectPath.trim().length === 0) {
@@ -137,7 +233,7 @@ const runStaticSecurityAnalysis = async (jsFileEntries) => {
       fileContent
     });
 
-    findings.push(...fileFindings.map(enhanceFindingWithTaintMetadata));
+    findings.push(...fileFindings.map((finding) => normalizeFinding(finding)));
   }
 
   return {
@@ -255,15 +351,14 @@ const runAiLayer = async (jsFileEntries) => {
 };
 
 async function analyzeProject(projectPath) {
-  const fallbackResult = {
-    summary: {
-      totalFiles: 0,
-      issuesFound: 0
-    },
+  const fallbackResult = normalizeResult({
+    success: false,
+    error: null,
+    summary: buildDefaultSummary(),
     findings: [],
     execution: buildDefaultExecution(),
     aiReport: buildDefaultAiReport()
-  };
+  });
 
   try {
     const resolvedProjectPath = await validateProjectPath(projectPath);
@@ -281,19 +376,24 @@ async function analyzeProject(projectPath) {
       aiReport.errors.push(...readErrors);
     }
 
-    return {
+    return normalizeResult({
+      success: true,
+      error: null,
       summary: {
         totalFiles: jsFileEntries.length,
-        issuesFound: findings.length
+        issuesFound: findings.length,
+        severity: buildSeveritySummary(findings)
       },
       findings,
       execution,
       aiReport
-    };
+    });
   } catch (error) {
     fallbackResult.aiReport.summary = 'Project analysis failed.';
     fallbackResult.aiReport.errors.push(error.message);
-    return fallbackResult;
+    fallbackResult.success = false;
+    fallbackResult.error = error.message;
+    return normalizeResult(fallbackResult);
   }
 }
 
