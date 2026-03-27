@@ -1,0 +1,2 @@
+﻿{"success":false,"message":"ZIP does not contain allowed files (.js, .json, .ts)","requestId":"f798dd6d-1131-4c39-851f-3fec23756575","details":"ZIP does not contain allowed files (.js, .json, .ts)"}
+HTTP_STATUS:400

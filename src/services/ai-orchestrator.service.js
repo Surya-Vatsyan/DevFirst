@@ -215,6 +215,7 @@ const runDebuggerPipeline = async ({ extractionFolder, selectedFiles, requestId 
   const issueMap = new Map();
   const uniqueFixes = new Set();
   let processedChunks = 0;
+  let fallbackUsed = false;
 
   for (const inputFilePath of limitedFiles) {
     const safeAbsolutePath = resolveSafeFilePath(extractionDirectory, inputFilePath);
@@ -284,6 +285,9 @@ const runDebuggerPipeline = async ({ extractionFolder, selectedFiles, requestId 
       try {
         const debuggerResult = await aiService.explainCode(snippetWithContext);
         processedChunks += 1;
+        if (debuggerResult && debuggerResult.fallbackUsed === true) {
+          fallbackUsed = true;
+        }
 
         for (const issueValue of debuggerResult.issues) {
           const normalizedIssue = normalizeIssueForReport(issueValue, displayFilePath, chunkIndex);
@@ -294,6 +298,7 @@ const runDebuggerPipeline = async ({ extractionFolder, selectedFiles, requestId 
           uniqueFixes.add(`[${displayFilePath}#${chunkIndex}] ${fix}`);
         }
       } catch (error) {
+        fallbackUsed = true;
         addIssueForReport(issueMap, {
           issue: `[chunk ${chunkIndex}] AI analysis failed for chunk`,
           severity: 'medium',
@@ -331,6 +336,7 @@ const runDebuggerPipeline = async ({ extractionFolder, selectedFiles, requestId 
   const fixes = Array.from(uniqueFixes);
 
   const summary = `Analyzed ${limitedFiles.length} file(s) in ${processedChunks} chunk(s). Found ${issues.length} issue(s) and ${fixes.length} fix(es).`;
+  const aiUsed = processedChunks > 0 && !fallbackUsed;
 
   logger.info('AI debugger orchestration completed', {
     requestId,
@@ -339,7 +345,9 @@ const runDebuggerPipeline = async ({ extractionFolder, selectedFiles, requestId 
     filesProcessed: limitedFiles.length,
     processedChunks,
     issues: issues.length,
-    fixes: fixes.length
+    fixes: fixes.length,
+    aiUsed,
+    fallbackUsed
   });
 
   return {
@@ -347,7 +355,9 @@ const runDebuggerPipeline = async ({ extractionFolder, selectedFiles, requestId 
     summaryStats,
     issues,
     files,
-    fixes
+    fixes,
+    aiUsed,
+    fallbackUsed
   };
 };
 

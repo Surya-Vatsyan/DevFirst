@@ -1,0 +1,64 @@
+﻿[
+    {
+        "case":  "case1-vulnerable",
+        "status":  201,
+        "parseOk":  true,
+        "success":  true,
+        "message":  "Analysis completed successfully",
+        "execution_attempted":  true,
+        "execution_success":  false,
+        "execution_error":  "spawn EPERM",
+        "execution_time":  0,
+        "stdout":  "",
+        "stderr":  "",
+        "security_findings_count":  3,
+        "security_high_count":  3,
+        "first_context":  "Tainted variable \"userInput\" from req.body flows into SQL query construction."
+    },
+    {
+        "case":  "case2-infinite-loop",
+        "status":  201,
+        "parseOk":  true,
+        "success":  true,
+        "message":  "Analysis completed successfully",
+        "execution_attempted":  true,
+        "execution_success":  false,
+        "execution_error":  "spawn EPERM",
+        "execution_time":  0,
+        "stdout":  "",
+        "stderr":  ""
+    },
+    {
+        "case":  "case3-safe",
+        "status":  201,
+        "parseOk":  true,
+        "success":  true,
+        "message":  "Analysis completed successfully",
+        "execution_attempted":  true,
+        "execution_success":  false,
+        "execution_error":  "spawn EPERM",
+        "execution_time":  0,
+        "stdout":  "",
+        "stderr":  ""
+    },
+    {
+        "case":  "case4-no-js",
+        "status":  400,
+        "parseOk":  true,
+        "success":  false,
+        "message":  "ZIP does not contain allowed files (.js, .json, .ts)"
+    },
+    {
+        "case":  "case5-json-only",
+        "status":  201,
+        "parseOk":  true,
+        "success":  true,
+        "message":  "Analysis completed successfully",
+        "execution_attempted":  false,
+        "execution_success":  false,
+        "execution_error":  "",
+        "execution_time":  0,
+        "stdout":  "",
+        "stderr":  ""
+    }
+]

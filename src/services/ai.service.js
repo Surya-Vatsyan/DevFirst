@@ -4,8 +4,11 @@ const OpenAI = require('openai');
 const logger = require('../utils/logger');
 
 const MAX_SNIPPET_CHARACTERS = 8000;
+const MAX_OUTPUT_TOKENS = 500;
+const MAX_AI_ATTEMPTS = 2;
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-5';
 const SEVERITY_VALUES = new Set(['low', 'medium', 'high']);
+const RETRYABLE_FAILURE_REASONS = new Set(['empty_output', 'json_parse_failed', 'schema_validation_failed']);
 const UNRELIABLE_WARNING_MESSAGE = 'AI output may be unreliable. Please review carefully.';
 const EXPLANATION_SCHEMA = {
   type: 'object',
@@ -48,18 +51,14 @@ const EXPLANATION_SCHEMA = {
 };
 
 let openAIClient;
+let hasLoggedMissingApiKeyWarning = false;
 
 const buildFallbackExplanation = () => ({
   summary: 'Unable to generate reliable debugger analysis for this snippet right now.',
-  issues: [
-    {
-      issue: 'AI response could not be validated as structured JSON.',
-      severity: 'medium',
-      confidence: 'low'
-    }
-  ],
-  fixes: ['Try again with a smaller, focused snippet.'],
+  issues: [],
+  fixes: [],
   aiReliable: false,
+  fallbackUsed: true,
   warning: UNRELIABLE_WARNING_MESSAGE
 });
 
@@ -75,11 +74,16 @@ const getClient = () => {
   }
 
   if (!process.env.OPENAI_API_KEY) {
-    const error = new Error('OpenAI API key is not configured');
-    error.statusCode = 500;
-    throw error;
+    if (!hasLoggedMissingApiKeyWarning) {
+      logger.warn('OpenAI API key is not configured. AI analysis is disabled.', {
+        aiDisabled: true
+      });
+      hasLoggedMissingApiKeyWarning = true;
+    }
+    return null;
   }
 
+  hasLoggedMissingApiKeyWarning = false;
   openAIClient = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
   });
@@ -113,6 +117,38 @@ const extractExplanationText = (response) => {
 };
 
 const isStringArray = (value) => Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+const buildSystemPrompt = (strictRetry) => {
+  const retryInstruction = strictRetry
+    ? 'STRICT RETRY MODE: previous output was invalid; output must be valid JSON only.'
+    : '';
+
+  return [
+    'You are DevGuard AI in strict backend debugger mode.',
+    'Return exactly one JSON object and nothing else.',
+    'Do not output markdown, code fences, comments, or any prose outside the JSON object.',
+    'Use only these top-level keys: "summary", "issues", "fixes".',
+    '"issues" must be an array of objects with keys "issue", "severity", "confidence".',
+    '"fixes" must be an array of strings.',
+    '"severity" and "confidence" values must be one of: low, medium, high.',
+    'Do not alter, remove, or re-grade static security scanner findings; only add explanations and suggested fixes.',
+    retryInstruction
+  ]
+    .filter(Boolean)
+    .join(' ');
+};
+
+const buildUserPrompt = (trimmedSnippet, strictRetry) => {
+  const retryLine = strictRetry ? 'Retry: previous response failed strict JSON validation.' : 'Analyze this code snippet.';
+
+  return [
+    retryLine,
+    'Return a JSON object that matches the schema exactly and has no extra keys.',
+    'If no issues are found, return: {"summary":"No obvious issues found.","issues":[],"fixes":[]}.',
+    '',
+    trimmedSnippet
+  ].join('\n');
+};
 
 const normalizeIssueObject = (issueValue) => {
   if (typeof issueValue === 'string') {
@@ -175,19 +211,11 @@ const normalizeStructuredExplanation = (value) => {
   return {
     summary: value.summary.trim(),
     issues: normalizedIssues,
-    fixes: value.fixes
+    fixes: value.fixes.map((fix) => fix.trim()).filter(Boolean)
   };
 };
 
-const buildReliableResponse = (normalizedOutput, fallbackUsed) => {
-  if (fallbackUsed) {
-    return {
-      ...normalizedOutput,
-      aiReliable: false,
-      warning: UNRELIABLE_WARNING_MESSAGE
-    };
-  }
-
+const buildReliableResponse = (normalizedOutput) => {
   const totalIssues = normalizedOutput.issues.length;
   const lowConfidenceIssues = normalizedOutput.issues.filter((issue) => issue.confidence === 'low').length;
   const aiReliable = totalIssues === 0 || lowConfidenceIssues <= totalIssues / 2;
@@ -196,13 +224,83 @@ const buildReliableResponse = (normalizedOutput, fallbackUsed) => {
     return {
       ...normalizedOutput,
       aiReliable: false,
+      fallbackUsed: false,
       warning: UNRELIABLE_WARNING_MESSAGE
     };
   }
 
   return {
     ...normalizedOutput,
-    aiReliable: true
+    aiReliable: true,
+    fallbackUsed: false
+  };
+};
+
+const requestStructuredExplanation = async ({ client, trimmedSnippet, attemptNumber }) => {
+  const strictRetry = attemptNumber > 1;
+
+  let response;
+  try {
+    response = await client.responses.create({
+      model: DEFAULT_MODEL,
+      input: [
+        {
+          role: 'system',
+          content: buildSystemPrompt(strictRetry)
+        },
+        {
+          role: 'user',
+          content: buildUserPrompt(trimmedSnippet, strictRetry)
+        }
+      ],
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'code_explanation',
+          strict: true,
+          schema: EXPLANATION_SCHEMA
+        }
+      },
+      max_output_tokens: MAX_OUTPUT_TOKENS
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'openai_request_failed',
+      error
+    };
+  }
+
+  const outputText = extractExplanationText(response);
+  if (!outputText) {
+    return {
+      ok: false,
+      reason: 'empty_output'
+    };
+  }
+
+  let parsedOutput;
+  try {
+    parsedOutput = JSON.parse(outputText);
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'json_parse_failed',
+      error
+    };
+  }
+
+  const normalizedOutput = normalizeStructuredExplanation(parsedOutput);
+  if (!normalizedOutput) {
+    return {
+      ok: false,
+      reason: 'schema_validation_failed'
+    };
+  }
+
+  return {
+    ok: true,
+    normalizedOutput
   };
 };
 
@@ -221,73 +319,73 @@ const explainCode = async (codeSnippet) => {
   }
 
   const client = getClient();
-
-  try {
-    const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL || DEFAULT_MODEL,
-      input: [
-        {
-          role: 'system',
-          content:
-            'You are a senior backend developer in debugger mode. Return only JSON with bug analysis and fixes. ' +
-            'Do not include markdown, prose, or extra keys.'
-        },
-        {
-          role: 'user',
-          content:
-            `Analyze this code snippet and return a JSON object with exactly these keys: ` +
-            `"summary" (string), "issues" (array of objects with issue/severity/confidence), ` +
-            `"fixes" (string array). For each issue object: "severity" and "confidence" must be one of low|medium|high.\n\n${trimmedSnippet}`
-        }
-      ],
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'code_explanation',
-          strict: true,
-          schema: EXPLANATION_SCHEMA
-        }
-      },
-      max_output_tokens: 500
+  if (!client) {
+    logger.warn('AI analysis skipped because OpenAI API key is missing.', {
+      aiSkipped: true,
+      reason: 'missing_api_key'
     });
-
-    const outputText = extractExplanationText(response);
-    if (!outputText) {
-      logger.warn('AI returned empty structured response', {
-        fallbackUsed: true
-      });
-      return buildFallbackExplanation();
-    }
-
-    let parsedOutput;
-    try {
-      parsedOutput = JSON.parse(outputText);
-    } catch (error) {
-      logger.warn('AI returned non-JSON response', {
-        fallbackUsed: true,
-        errorMessage: error.message
-      });
-      return buildFallbackExplanation();
-    }
-
-    const normalizedOutput = normalizeStructuredExplanation(parsedOutput);
-    if (!normalizedOutput) {
-      logger.warn('AI returned invalid structured response shape', {
-        fallbackUsed: true
-      });
-      return buildFallbackExplanation();
-    }
-
-    return buildReliableResponse(normalizedOutput, false);
-  } catch (error) {
-    logger.error('OpenAI explainCode request failed', {
-      statusCode: typeof error.status === 'number' ? error.status : undefined,
-      code: error.code,
-      errorMessage: error.message
-    });
-
     return buildFallbackExplanation();
   }
+
+  let attemptsUsed = 0;
+  let lastFailureReason = 'unknown';
+
+  for (let attemptNumber = 1; attemptNumber <= MAX_AI_ATTEMPTS; attemptNumber += 1) {
+    attemptsUsed = attemptNumber;
+    const attemptResult = await requestStructuredExplanation({
+      client,
+      trimmedSnippet,
+      attemptNumber
+    });
+
+    if (attemptResult.ok) {
+      logger.info('AI structured response validated', {
+        attemptNumber,
+        retryAttempts: attemptNumber - 1,
+        issues: attemptResult.normalizedOutput.issues.length,
+        fixes: attemptResult.normalizedOutput.fixes.length
+      });
+      return buildReliableResponse(attemptResult.normalizedOutput);
+    }
+
+    lastFailureReason = attemptResult.reason;
+    logger.warn('AI structured response attempt failed', {
+      attemptNumber,
+      reason: attemptResult.reason,
+      errorMessage: attemptResult.error ? attemptResult.error.message : undefined
+    });
+
+    const shouldRetry =
+      attemptNumber < MAX_AI_ATTEMPTS && RETRYABLE_FAILURE_REASONS.has(attemptResult.reason);
+
+    if (shouldRetry) {
+      logger.info('Retrying AI request with stricter prompt', {
+        nextAttempt: attemptNumber + 1,
+        previousFailureReason: attemptResult.reason
+      });
+      continue;
+    }
+
+    if (attemptResult.reason === 'openai_request_failed') {
+      logger.error('OpenAI explainCode request failed', {
+        statusCode:
+          attemptResult.error && typeof attemptResult.error.status === 'number'
+            ? attemptResult.error.status
+            : undefined,
+        code: attemptResult.error ? attemptResult.error.code : undefined,
+        errorMessage: attemptResult.error ? attemptResult.error.message : undefined
+      });
+    }
+
+    break;
+  }
+
+  logger.warn('AI fallback engaged after validation failure', {
+    fallbackUsed: true,
+    attemptsUsed,
+    lastFailureReason
+  });
+  return buildFallbackExplanation();
 };
 
 module.exports = {

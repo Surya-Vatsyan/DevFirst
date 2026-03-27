@@ -1,0 +1,26 @@
+﻿[
+    {
+        "Name":  "case1-vulnerable",
+        "Status":  201,
+        "RawPath":  "c:\\Users\\surya\\OneDrive\\Desktop\\DEv\\tmp-pipeline-tests\\results\\case1-vulnerable.raw.txt",
+        "ParsedPath":  "c:\\Users\\surya\\OneDrive\\Desktop\\DEv\\tmp-pipeline-tests\\results\\case1-vulnerable.parsed.json"
+    },
+    {
+        "Name":  "case2-infinite-loop",
+        "Status":  201,
+        "RawPath":  "c:\\Users\\surya\\OneDrive\\Desktop\\DEv\\tmp-pipeline-tests\\results\\case2-infinite-loop.raw.txt",
+        "ParsedPath":  "c:\\Users\\surya\\OneDrive\\Desktop\\DEv\\tmp-pipeline-tests\\results\\case2-infinite-loop.parsed.json"
+    },
+    {
+        "Name":  "case3-safe",
+        "Status":  201,
+        "RawPath":  "c:\\Users\\surya\\OneDrive\\Desktop\\DEv\\tmp-pipeline-tests\\results\\case3-safe.raw.txt",
+        "ParsedPath":  "c:\\Users\\surya\\OneDrive\\Desktop\\DEv\\tmp-pipeline-tests\\results\\case3-safe.parsed.json"
+    },
+    {
+        "Name":  "case4-no-js",
+        "Status":  400,
+        "RawPath":  "c:\\Users\\surya\\OneDrive\\Desktop\\DEv\\tmp-pipeline-tests\\results\\case4-no-js.raw.txt",
+        "ParsedPath":  "c:\\Users\\surya\\OneDrive\\Desktop\\DEv\\tmp-pipeline-tests\\results\\case4-no-js.parsed.json"
+    }
+]

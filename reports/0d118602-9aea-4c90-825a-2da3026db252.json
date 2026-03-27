@@ -1,0 +1,83 @@
+{
+  "reportId": "0d118602-9aea-4c90-825a-2da3026db252",
+  "timestamp": "2026-03-26T10:17:56.797Z",
+  "reportData": {
+    "success": true,
+    "status": "completed",
+    "aiUsed": false,
+    "fallbackUsed": true,
+    "filesAnalyzed": 1,
+    "message": "Analysis completed successfully",
+    "data": {
+      "reportId": "0d118602-9aea-4c90-825a-2da3026db252",
+      "fileName": "dd3704bb-b363-4f19-9fba-fda9c0900b68.zip",
+      "size": 576,
+      "extractionFolder": "uploads/17d8f9c1-6da2-44f7-9460-4a5d989e3cba",
+      "extractedFiles": [
+        "Untitled Folder 4/test.js"
+      ],
+      "totalFiles": 1,
+      "report": {
+        "totalFiles": 1,
+        "jsFiles": 1,
+        "tsFiles": 0,
+        "jsonFiles": 0,
+        "largeFiles": [],
+        "emptyFiles": [],
+        "selectedFiles": [
+          "Untitled Folder 4/test.js"
+        ],
+        "securityFindings": [
+          {
+            "type": "security",
+            "severity": "high",
+            "confidence": "high",
+            "file": "Untitled Folder 4/test.js",
+            "message": "Potential SQL injection risk: query string built from input data.",
+            "context": "Tainted variable \"userId\" from req.body flows into SQL query construction.",
+            "suggestion": "Use parameterized placeholders instead of building SQL with input."
+          }
+        ],
+        "securitySummary": {
+          "high": 1,
+          "medium": 0,
+          "low": 0
+        }
+      },
+      "aiReport": {
+        "summary": "Analyzed 1 file(s) in 1 chunk(s). Found 1 issue(s) and 1 fix(es).",
+        "summaryStats": {
+          "high": 0,
+          "medium": 1,
+          "low": 0
+        },
+        "issues": [
+          {
+            "issue": "[chunk 1] AI response could not be validated as structured JSON.",
+            "severity": "medium",
+            "confidence": "low",
+            "file": "uploads/17d8f9c1-6da2-44f7-9460-4a5d989e3cba/Untitled Folder 4/test.js"
+          }
+        ],
+        "files": [
+          {
+            "file": "uploads/17d8f9c1-6da2-44f7-9460-4a5d989e3cba/Untitled Folder 4/test.js",
+            "issues": [
+              {
+                "issue": "[chunk 1] AI response could not be validated as structured JSON.",
+                "severity": "medium",
+                "confidence": "low"
+              }
+            ]
+          }
+        ],
+        "fixes": [
+          "[uploads/17d8f9c1-6da2-44f7-9460-4a5d989e3cba/Untitled Folder 4/test.js#1] Try again with a smaller, focused snippet."
+        ],
+        "aiUsed": false,
+        "fallbackUsed": true
+      }
+    },
+    "requestId": "1e65cdee-1e80-473f-a702-b923627d3f8d"
+  }
+}

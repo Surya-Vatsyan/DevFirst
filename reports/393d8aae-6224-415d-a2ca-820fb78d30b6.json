@@ -1,0 +1,68 @@
+{
+  "reportId": "393d8aae-6224-415d-a2ca-820fb78d30b6",
+  "timestamp": "2026-03-26T05:43:41.822Z",
+  "reportData": {
+    "success": true,
+    "status": "completed",
+    "aiUsed": false,
+    "fallbackUsed": true,
+    "filesAnalyzed": 1,
+    "message": "Analysis completed successfully",
+    "data": {
+      "reportId": "393d8aae-6224-415d-a2ca-820fb78d30b6",
+      "fileName": "8c9862de-3167-4b77-917a-5d9fba10f7d0.zip",
+      "size": 290,
+      "extractionFolder": "uploads/cf1738b1-954c-4e2c-93fe-8dab24c5a748",
+      "extractedFiles": [
+        "config.json",
+        "index.js"
+      ],
+      "totalFiles": 2,
+      "report": {
+        "totalFiles": 2,
+        "jsFiles": 1,
+        "tsFiles": 0,
+        "jsonFiles": 1,
+        "largeFiles": [],
+        "emptyFiles": [],
+        "selectedFiles": [
+          "index.js"
+        ]
+      },
+      "aiReport": {
+        "summary": "Analyzed 1 file(s) in 1 chunk(s). Found 1 issue(s) and 1 fix(es).",
+        "summaryStats": {
+          "high": 0,
+          "medium": 1,
+          "low": 0
+        },
+        "issues": [
+          {
+            "issue": "[chunk 1] AI response could not be validated as structured JSON.",
+            "severity": "medium",
+            "confidence": "low",
+            "file": "uploads/cf1738b1-954c-4e2c-93fe-8dab24c5a748/index.js"
+          }
+        ],
+        "files": [
+          {
+            "file": "uploads/cf1738b1-954c-4e2c-93fe-8dab24c5a748/index.js",
+            "issues": [
+              {
+                "issue": "[chunk 1] AI response could not be validated as structured JSON.",
+                "severity": "medium",
+                "confidence": "low"
+              }
+            ]
+          }
+        ],
+        "fixes": [
+          "[uploads/cf1738b1-954c-4e2c-93fe-8dab24c5a748/index.js#1] Try again with a smaller, focused snippet."
+        ],
+        "aiUsed": false,
+        "fallbackUsed": true
+      }
+    },
+    "requestId": "0158be5f-2882-49c2-85b2-d3469abc18d4"
+  }
+}

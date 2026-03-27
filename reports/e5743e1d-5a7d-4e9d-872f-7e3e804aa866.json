@@ -1,0 +1,89 @@
+{
+  "reportId": "e5743e1d-5a7d-4e9d-872f-7e3e804aa866",
+  "timestamp": "2026-03-27T14:20:12.545Z",
+  "reportData": {
+    "success": true,
+    "status": "completed",
+    "aiUsed": false,
+    "fallbackUsed": true,
+    "filesAnalyzed": 1,
+    "message": "Analysis completed successfully",
+    "data": {
+      "reportId": "e5743e1d-5a7d-4e9d-872f-7e3e804aa866",
+      "fileName": "c01dd90f-a5a4-4205-8b4a-38bb6de9345f.zip",
+      "size": 269,
+      "extractionFolder": "uploads/7569a93c-42ea-4ba2-971a-c1d44e9e5afd",
+      "extractedFiles": [
+        "test-vuln.js"
+      ],
+      "totalFiles": 1,
+      "report": {
+        "totalFiles": 1,
+        "jsFiles": 1,
+        "tsFiles": 0,
+        "jsonFiles": 0,
+        "largeFiles": [],
+        "emptyFiles": [],
+        "selectedFiles": [
+          "test-vuln.js"
+        ],
+        "securityFindings": [
+          {
+            "type": "security",
+            "severity": "high",
+            "confidence": "high",
+            "file": "test-vuln.js",
+            "message": "Potential SQL injection risk: query string built from input data.",
+            "context": "Tainted variable \"userInput\" from req.body flows into SQL query construction.",
+            "suggestion": "Use parameterized placeholders instead of building SQL with input."
+          },
+          {
+            "type": "security",
+            "severity": "high",
+            "confidence": "high",
+            "file": "test-vuln.js",
+            "message": "Potential SQL injection risk: dynamic query with input data.",
+            "context": "Tainted variable \"userInput\" from req.body flows into SQL query variable \"sql\" and then into query execution.",
+            "suggestion": "Use parameterized queries or prepared statements."
+          },
+          {
+            "type": "security",
+            "severity": "high",
+            "confidence": "high",
+            "file": "test-vuln.js",
+            "message": "Dynamic HTML assignment detected; possible XSS vector.",
+            "context": "Tainted variable \"userInput\" from req.body flows into HTML assignment.",
+            "suggestion": "Prefer textContent or sanitize untrusted HTML inputs."
+          }
+        ],
+        "securitySummary": {
+          "high": 3,
+          "medium": 0,
+          "low": 0
+        },
+        "execution": {
+          "attempted": true,
+          "success": false,
+          "error": "spawn EPERM",
+          "stdout": "",
+          "stderr": "",
+          "executionTime": 0
+        }
+      },
+      "aiReport": {
+        "summary": "Analyzed 1 file(s) in 1 chunk(s). Found 0 issue(s) and 0 fix(es).",
+        "summaryStats": {
+          "high": 0,
+          "medium": 0,
+          "low": 0
+        },
+        "issues": [],
+        "files": [],
+        "fixes": [],
+        "aiUsed": false,
+        "fallbackUsed": true
+      }
+    },
+    "requestId": "03d16b35-b9d4-40c0-9c59-3a621210fdf1"
+  }
+}
