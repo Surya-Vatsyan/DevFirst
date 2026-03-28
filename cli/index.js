@@ -5,6 +5,12 @@ const path = require('path');
 const { analyzeProject } = require('../src/core/analyzeProject');
 
 const SEVERITY_ORDER = ['high', 'medium', 'low'];
+const MAX_PRINTED_ISSUES = 10;
+const UNKNOWN_FILE = 'unknown';
+const DEFAULT_MESSAGE = 'Issue detected.';
+const DEFAULT_CONTEXT = 'No context available.';
+const DEFAULT_SUGGESTION = 'Review and remediate this issue.';
+const DEFAULT_CONFIDENCE = 'low';
 
 const printUsage = () => {
   process.stdout.write('Usage: devguard scan <path>\n');
@@ -34,36 +40,98 @@ const groupFindingsBySeverity = (findings) => {
   return grouped;
 };
 
-const toTitleCase = (value) => {
-  if (typeof value !== 'string' || value.length === 0) {
+const normalizeLine = (line) => {
+  if (Number.isInteger(line) && line > 0) {
+    return line;
+  }
+
+  return -1;
+};
+
+const formatFileLocation = (file, line) => {
+  if (line > 0) {
+    return `${file}:${line}`;
+  }
+
+  return `${file} (line unknown)`;
+};
+
+const normalizeSeverityCounts = (summary, findings) => {
+  const grouped = groupFindingsBySeverity(findings);
+  const summarySeverity = summary && summary.severity && typeof summary.severity === 'object' ? summary.severity : {};
+
+  return {
+    high: Number.isInteger(summarySeverity.high) ? summarySeverity.high : grouped.high.length,
+    medium: Number.isInteger(summarySeverity.medium) ? summarySeverity.medium : grouped.medium.length,
+    low: Number.isInteger(summarySeverity.low) ? summarySeverity.low : grouped.low.length
+  };
+};
+
+const flattenFindingsBySeverity = (grouped) => {
+  const ordered = [];
+  for (const severity of SEVERITY_ORDER) {
+    ordered.push(...grouped[severity]);
+  }
+  return ordered;
+};
+
+const mapExecutionError = (error) => {
+  if (typeof error !== 'string' || error.trim().length === 0) {
     return '';
   }
 
-  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+  const normalized = error.toLowerCase();
+  if (normalized.includes('spawn eperm')) {
+    return 'Sandbox execution failed (Docker permission issue)';
+  }
+
+  if (normalized.includes('timed out') || normalized.includes('timeout')) {
+    return 'Execution timed out (possible infinite loop)';
+  }
+
+  return error;
+};
+
+const printSeverityGroups = (severityCounts) => {
+  process.stdout.write(`🔴 HIGH (${severityCounts.high} issues)\n`);
+  process.stdout.write(`🟡 MEDIUM (${severityCounts.medium} issues)\n`);
+  process.stdout.write(`🟢 LOW (${severityCounts.low} issues)\n\n`);
 };
 
 const printFindings = (findings) => {
   const grouped = groupFindingsBySeverity(findings);
+  const orderedFindings = flattenFindingsBySeverity(grouped);
+  const visibleFindings = orderedFindings.slice(0, MAX_PRINTED_ISSUES);
 
-  process.stdout.write(
-    `Severity: HIGH=${grouped.high.length} MEDIUM=${grouped.medium.length} LOW=${grouped.low.length}\n\n`
-  );
+  for (const finding of visibleFindings) {
+    const severity = typeof finding.severity === 'string' ? finding.severity.toUpperCase() : 'LOW';
+    const message =
+      typeof finding.message === 'string' && finding.message.trim().length > 0 ? finding.message : DEFAULT_MESSAGE;
+    const file = typeof finding.file === 'string' && finding.file.trim().length > 0 ? finding.file : UNKNOWN_FILE;
+    const line = normalizeLine(finding.line);
+    const confidence =
+      typeof finding.confidence === 'string' && finding.confidence.trim().length > 0
+        ? finding.confidence.toUpperCase()
+        : DEFAULT_CONFIDENCE.toUpperCase();
+    const context =
+      typeof finding.context === 'string' && finding.context.trim().length > 0 ? finding.context : DEFAULT_CONTEXT;
+    const suggestion =
+      typeof finding.suggestion === 'string' && finding.suggestion.trim().length > 0
+        ? finding.suggestion
+        : DEFAULT_SUGGESTION;
 
-  for (const severity of SEVERITY_ORDER) {
-    const entries = grouped[severity];
-    for (const finding of entries) {
-      const title = typeof finding.message === 'string' && finding.message.trim().length > 0
-        ? finding.message
-        : 'Issue detected';
-      const file = typeof finding.file === 'string' && finding.file.trim().length > 0 ? finding.file : 'unknown file';
-      const context =
-        typeof finding.context === 'string' && finding.context.trim().length > 0
-          ? finding.context
-          : 'No context available.';
+    process.stdout.write(`[${severity}] ${message}\n`);
+    process.stdout.write(`File: ${formatFileLocation(file, line)}\n`);
+    process.stdout.write(`Confidence: ${confidence}\n`);
+    process.stdout.write('Context:\n');
+    process.stdout.write(`→ ${context}\n`);
+    process.stdout.write('Fix:\n');
+    process.stdout.write(`→ ${suggestion}\n\n`);
+  }
 
-      process.stdout.write(`[${toTitleCase(severity).toUpperCase()}] ${title} in ${file}\n`);
-      process.stdout.write(`→ ${context}\n\n`);
-    }
+  if (orderedFindings.length > MAX_PRINTED_ISSUES) {
+    const remaining = orderedFindings.length - MAX_PRINTED_ISSUES;
+    process.stdout.write(`...and ${remaining} more issues\n\n`);
   }
 };
 
@@ -83,9 +151,15 @@ const printExecution = (execution) => {
   }
 
   process.stdout.write(`time: ${execution.executionTime || 0} ms\n`);
-  if (execution.error) {
-    process.stdout.write(`error: ${execution.error}\n`);
+  const mappedError = mapExecutionError(execution.error);
+  if (mappedError) {
+    process.stdout.write(`error: ${mappedError}\n`);
   }
+};
+
+const printFinalTip = () => {
+  process.stdout.write('\nTip:\n');
+  process.stdout.write('Fix HIGH severity issues before deploying.\n');
 };
 
 const run = async () => {
@@ -108,34 +182,42 @@ const run = async () => {
 
   try {
     const result = await analyzeProject(scanPath);
-    const errorMessage =
-      result &&
-      result.aiReport &&
-      Array.isArray(result.aiReport.errors) &&
-      result.aiReport.errors.length > 0 &&
-      result.summary &&
-      result.summary.totalFiles === 0
-        ? result.aiReport.errors[0]
-        : '';
+    const safeResult = result && typeof result === 'object' ? result : {};
+    const summary = safeResult.summary && typeof safeResult.summary === 'object' ? safeResult.summary : {};
+    const findings = Array.isArray(safeResult.findings) ? safeResult.findings : [];
+    const severityCounts = normalizeSeverityCounts(summary, findings);
 
-    if (errorMessage) {
+    if (!safeResult.success) {
+      const errorMessage =
+        typeof safeResult.error === 'string' && safeResult.error.trim().length > 0
+          ? safeResult.error
+          : 'Project scan failed.';
       process.stdout.write(`❌ ${errorMessage}\n`);
       process.exitCode = 1;
       return;
     }
 
-    process.stdout.write(`✔ Files analyzed: ${result.summary.totalFiles}\n`);
-    process.stdout.write(`⚠ Issues found: ${result.summary.issuesFound}\n\n`);
+    const filesAnalyzed = Number.isInteger(summary.totalFiles) ? summary.totalFiles : 0;
+    const issuesFound = Number.isInteger(summary.issuesFound) ? summary.issuesFound : findings.length;
 
-    if (result.summary.totalFiles === 0) {
+    process.stdout.write(`✔ Files analyzed: ${filesAnalyzed}\n`);
+    process.stdout.write(`⚠ Issues found: ${issuesFound}\n\n`);
+    printSeverityGroups(severityCounts);
+
+    if (filesAnalyzed === 0) {
       process.stdout.write('⚠ No JavaScript files found.\n\n');
-    } else if (result.summary.issuesFound > 0) {
-      printFindings(result.findings);
+    } else if (issuesFound > 0) {
+      printFindings(findings);
     } else {
       process.stdout.write('✔ No issues detected.\n\n');
     }
 
-    printExecution(result.execution);
+    printExecution(safeResult.execution);
+    printFinalTip();
+
+    if (severityCounts.high > 0) {
+      process.exitCode = 1;
+    }
   } catch (error) {
     process.stdout.write(`❌ ${error.message}\n`);
     process.exitCode = 1;

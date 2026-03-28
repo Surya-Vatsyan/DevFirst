@@ -12,6 +12,30 @@ const { executeSandbox } = require('../../sandbox/executor');
 
 const projectRootDirectory = path.join(__dirname, '..', '..');
 const reportsDirectory = path.join(projectRootDirectory, 'reports');
+const ANALYSIS_TIMEOUT_MS = 5000;
+
+const executeWithTimeout = async (taskFunction, timeoutMs, timeoutMessage) => {
+  let timeoutHandle;
+
+  return new Promise((resolve, reject) => {
+    timeoutHandle = setTimeout(() => {
+      const timeoutError = new Error(timeoutMessage);
+      timeoutError.statusCode = 408;
+      reject(timeoutError);
+    }, timeoutMs);
+
+    Promise.resolve()
+      .then(taskFunction)
+      .then((result) => {
+        clearTimeout(timeoutHandle);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timeoutHandle);
+        reject(error);
+      });
+  });
+};
 
 const cleanupUploadArtifacts = async ({ uploadedZipFilePath, extractionFolder, requestId }) => {
   if (uploadedZipFilePath) {
@@ -101,89 +125,100 @@ const uploadFile = async (req, res, next) => {
       requestId: req.requestId
     });
     extractionFolder = extractionResult.extractionFolder;
-    const report = await codebaseAnalyzerService.analyzeExtractedFolder({
-      extractionFolder: extractionResult.extractionFolder,
-      requestId: req.requestId
-    });
-    let execution = {
-      attempted: false,
-      success: false,
-      error: '',
-      stdout: '',
-      stderr: '',
-      executionTime: 0
-    };
-
-    let entryFile = null;
-    try {
-      entryFile = detectEntryFile(extractionResult.extractedFiles);
-      logger.info('Entry file detection completed', {
-        requestId: req.requestId,
-        extractionFolder: extractionResult.extractionFolder,
-        entryFile
-      });
-
-      if (entryFile) {
-        logger.info('Sandbox execution started', {
-          requestId: req.requestId,
+    const { report, aiReport } = await executeWithTimeout(
+      async () => {
+        const report = await codebaseAnalyzerService.analyzeExtractedFolder({
           extractionFolder: extractionResult.extractionFolder,
-          entryFile
+          requestId: req.requestId
         });
-
-        const executionResult = await executeSandbox({
-          codePath: extractionResult.extractionFolder,
-          entryFile
-        });
-
-        execution = {
-          attempted: true,
-          success: Boolean(executionResult && executionResult.success),
-          error: executionResult && typeof executionResult.error === 'string' ? executionResult.error : '',
-          stdout: executionResult && typeof executionResult.stdout === 'string' ? executionResult.stdout : '',
-          stderr: executionResult && typeof executionResult.stderr === 'string' ? executionResult.stderr : '',
-          executionTime:
-            executionResult && Number.isFinite(executionResult.executionTime) ? executionResult.executionTime : 0
+        let execution = {
+          attempted: false,
+          success: false,
+          error: '',
+          stdout: '',
+          stderr: '',
+          executionTime: 0
         };
 
-        logger.info('Sandbox execution completed', {
-          requestId: req.requestId,
+        let entryFile = null;
+        try {
+          entryFile = detectEntryFile(extractionResult.extractedFiles);
+          logger.info('Entry file detection completed', {
+            requestId: req.requestId,
+            extractionFolder: extractionResult.extractionFolder,
+            entryFile
+          });
+
+          if (entryFile) {
+            logger.info('Sandbox execution started', {
+              requestId: req.requestId,
+              extractionFolder: extractionResult.extractionFolder,
+              entryFile
+            });
+
+            const executionResult = await executeSandbox({
+              codePath: extractionResult.extractionFolder,
+              entryFile
+            });
+
+            execution = {
+              attempted: true,
+              success: Boolean(executionResult && executionResult.success),
+              error: executionResult && typeof executionResult.error === 'string' ? executionResult.error : '',
+              stdout: executionResult && typeof executionResult.stdout === 'string' ? executionResult.stdout : '',
+              stderr: executionResult && typeof executionResult.stderr === 'string' ? executionResult.stderr : '',
+              executionTime:
+                executionResult && Number.isFinite(executionResult.executionTime) ? executionResult.executionTime : 0
+            };
+
+            logger.info('Sandbox execution completed', {
+              requestId: req.requestId,
+              extractionFolder: extractionResult.extractionFolder,
+              entryFile,
+              success: execution.success,
+              executionTime: execution.executionTime,
+              error: execution.error
+            });
+          } else {
+            logger.info('Sandbox execution skipped: no entry file detected', {
+              requestId: req.requestId,
+              extractionFolder: extractionResult.extractionFolder
+            });
+          }
+        } catch (executionError) {
+          execution = {
+            attempted: Boolean(entryFile),
+            success: false,
+            error: executionError.message,
+            stdout: '',
+            stderr: '',
+            executionTime: 0
+          };
+
+          logger.warn('Sandbox execution failed', {
+            requestId: req.requestId,
+            extractionFolder: extractionResult.extractionFolder,
+            entryFile,
+            errorMessage: executionError.message
+          });
+        }
+
+        report.execution = execution;
+
+        const aiReport = await aiOrchestratorService.runDebuggerPipeline({
           extractionFolder: extractionResult.extractionFolder,
-          entryFile,
-          success: execution.success,
-          executionTime: execution.executionTime,
-          error: execution.error
+          selectedFiles: report.selectedFiles,
+          requestId: req.requestId
         });
-      } else {
-        logger.info('Sandbox execution skipped: no entry file detected', {
-          requestId: req.requestId,
-          extractionFolder: extractionResult.extractionFolder
-        });
-      }
-    } catch (executionError) {
-      execution = {
-        attempted: Boolean(entryFile),
-        success: false,
-        error: executionError.message,
-        stdout: '',
-        stderr: '',
-        executionTime: 0
-      };
 
-      logger.warn('Sandbox execution failed', {
-        requestId: req.requestId,
-        extractionFolder: extractionResult.extractionFolder,
-        entryFile,
-        errorMessage: executionError.message
-      });
-    }
-
-    report.execution = execution;
-
-    const aiReport = await aiOrchestratorService.runDebuggerPipeline({
-      extractionFolder: extractionResult.extractionFolder,
-      selectedFiles: report.selectedFiles,
-      requestId: req.requestId
-    });
+        return {
+          report,
+          aiReport
+        };
+      },
+      ANALYSIS_TIMEOUT_MS,
+      'Analysis timed out'
+    );
     const fallbackUsed = Boolean(aiReport && aiReport.fallbackUsed);
     const aiUsed = Boolean(aiReport && aiReport.aiUsed) && !fallbackUsed;
     const reportId = randomUUID();

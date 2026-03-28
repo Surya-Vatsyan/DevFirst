@@ -11,6 +11,9 @@ const JS_EXTENSION = '.js';
 const NODE_MODULES_DIRECTORY = 'node_modules';
 const MAX_AI_FILES = 5;
 const MAX_AI_SNIPPET_CHARACTERS = 8000;
+const MAX_AI_FILE_CHARACTERS = 8000;
+const MAX_AI_TOTAL_CHARACTERS = 32000;
+const SCAN_TIMEOUT_MS = 5000;
 const SEVERITY_VALUES = new Set(['low', 'medium', 'high']);
 const CONFIDENCE_VALUES = new Set(['low', 'medium', 'high']);
 const DEFAULT_CONTEXT = 'No taint flow context available.';
@@ -71,6 +74,8 @@ const normalizeConfidence = (value) => {
   return CONFIDENCE_VALUES.has(normalized) ? normalized : 'low';
 };
 
+const normalizeLineNumber = (value) => (Number.isInteger(value) && value > 0 ? value : -1);
+
 const normalizeFinding = (finding = {}) => {
   const normalized = finding && typeof finding === 'object' && !Array.isArray(finding) ? finding : {};
 
@@ -82,6 +87,7 @@ const normalizeFinding = (finding = {}) => {
       typeof normalized.file === 'string' && normalized.file.trim().length > 0
         ? normalized.file
         : DEFAULT_FILE,
+    line: normalizeLineNumber(normalized.line),
     message:
       typeof normalized.message === 'string' && normalized.message.trim().length > 0
         ? normalized.message
@@ -159,6 +165,27 @@ const normalizeResult = ({ success, error, summary, findings, execution, aiRepor
     execution: normalizeExecution(execution),
     aiReport: normalizeAiReport(aiReport)
   };
+};
+
+const executeWithTimeout = async (taskFunction, timeoutMs, timeoutMessage) => {
+  let timeoutHandle;
+
+  return new Promise((resolve, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+
+    Promise.resolve()
+      .then(taskFunction)
+      .then((result) => {
+        clearTimeout(timeoutHandle);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timeoutHandle);
+        reject(error);
+      });
+  });
 };
 
 const validateProjectPath = async (projectPath) => {
@@ -287,6 +314,7 @@ const runAiLayer = async (jsFileEntries) => {
   const uniqueFixes = new Set();
   let aiCalls = 0;
   let nonFallbackCalls = 0;
+  let totalAiCharacters = 0;
 
   if (targetFiles.length === 0) {
     aiReport.summary = 'No JavaScript files available for AI analysis.';
@@ -311,13 +339,24 @@ const runAiLayer = async (jsFileEntries) => {
       continue;
     }
 
+    if (fileContent.length > MAX_AI_FILE_CHARACTERS) {
+      aiReport.errors.push(`AI input rejected for ${fileEntry.relativePath}: file content too large`);
+      continue;
+    }
+
+    const snippet = buildAiSnippet({
+      relativePath: fileEntry.relativePath,
+      fileContent
+    });
+
+    if (totalAiCharacters + snippet.length > MAX_AI_TOTAL_CHARACTERS) {
+      aiReport.errors.push('AI input rejected: total input size limit exceeded');
+      break;
+    }
+
     try {
-      const aiResult = await aiService.explainCode(
-        buildAiSnippet({
-          relativePath: fileEntry.relativePath,
-          fileContent
-        })
-      );
+      const aiResult = await aiService.explainCode(snippet);
+      totalAiCharacters += snippet.length;
 
       aiCalls += 1;
       if (!aiResult.fallbackUsed) {
@@ -361,33 +400,39 @@ async function analyzeProject(projectPath) {
   });
 
   try {
-    const resolvedProjectPath = await validateProjectPath(projectPath);
-    const allFiles = await collectFilesRecursively(resolvedProjectPath);
-    const jsFileEntries = buildJsFileEntries(resolvedProjectPath, allFiles);
-    const { findings, readErrors } = await runStaticSecurityAnalysis(jsFileEntries);
-    const entryFile = detectEntryFile(jsFileEntries.map((fileEntry) => fileEntry.relativePath));
-    const execution = await runSandboxStage({
-      projectPath: resolvedProjectPath,
-      entryFile
-    });
-    const aiReport = await runAiLayer(jsFileEntries);
+    return await executeWithTimeout(
+      async () => {
+        const resolvedProjectPath = await validateProjectPath(projectPath);
+        const allFiles = await collectFilesRecursively(resolvedProjectPath);
+        const jsFileEntries = buildJsFileEntries(resolvedProjectPath, allFiles);
+        const { findings, readErrors } = await runStaticSecurityAnalysis(jsFileEntries);
+        const entryFile = detectEntryFile(jsFileEntries.map((fileEntry) => fileEntry.relativePath));
+        const execution = await runSandboxStage({
+          projectPath: resolvedProjectPath,
+          entryFile
+        });
+        const aiReport = await runAiLayer(jsFileEntries);
 
-    if (readErrors.length > 0) {
-      aiReport.errors.push(...readErrors);
-    }
+        if (readErrors.length > 0) {
+          aiReport.errors.push(...readErrors);
+        }
 
-    return normalizeResult({
-      success: true,
-      error: null,
-      summary: {
-        totalFiles: jsFileEntries.length,
-        issuesFound: findings.length,
-        severity: buildSeveritySummary(findings)
+        return normalizeResult({
+          success: true,
+          error: null,
+          summary: {
+            totalFiles: jsFileEntries.length,
+            issuesFound: findings.length,
+            severity: buildSeveritySummary(findings)
+          },
+          findings,
+          execution,
+          aiReport
+        });
       },
-      findings,
-      execution,
-      aiReport
-    });
+      SCAN_TIMEOUT_MS,
+      'Project scan timed out'
+    );
   } catch (error) {
     fallbackResult.aiReport.summary = 'Project analysis failed.';
     fallbackResult.aiReport.errors.push(error.message);

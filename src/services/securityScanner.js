@@ -48,11 +48,52 @@ const SECRET_ASSIGNMENT_PATTERNS = [
 const PLACEHOLDER_SECRET_REGEX = /\b(example|sample|dummy|changeme|your[_-]?(api[_-]?key|secret|password))(?:_here)?\b/i;
 const VALID_IDENTIFIER_REGEX = /^[A-Za-z_$][\w$]*$/;
 
-const buildFinding = ({ severity, confidence, filePath, message, context, suggestion }) => ({
+const normalizeLineNumber = (line) => (Number.isInteger(line) && line > 0 ? line : -1);
+
+const buildLineStartOffsets = (fileContent) => {
+  const lineStartOffsets = [0];
+
+  for (let index = 0; index < fileContent.length; index += 1) {
+    if (fileContent[index] === '\n') {
+      lineStartOffsets.push(index + 1);
+    }
+  }
+
+  return lineStartOffsets;
+};
+
+const createLineNumberResolver = (fileContent) => {
+  const lineStartOffsets = buildLineStartOffsets(fileContent);
+
+  return (matchIndex) => {
+    if (!Number.isInteger(matchIndex) || matchIndex < 0) {
+      return -1;
+    }
+
+    let left = 0;
+    let right = lineStartOffsets.length - 1;
+    let bestIndex = 0;
+
+    while (left <= right) {
+      const middle = Math.floor((left + right) / 2);
+      if (lineStartOffsets[middle] <= matchIndex) {
+        bestIndex = middle;
+        left = middle + 1;
+      } else {
+        right = middle - 1;
+      }
+    }
+
+    return bestIndex + 1;
+  };
+};
+
+const buildFinding = ({ severity, confidence, filePath, line, message, context, suggestion }) => ({
   type: 'security',
   severity,
   confidence,
   file: filePath,
+  line: normalizeLineNumber(line),
   message,
   context,
   suggestion
@@ -211,7 +252,8 @@ const getMappedFlow = (text, mappedFlowMap) => {
 const detectHardcodedSecrets = (lines, filePath, dedupeKeys) => {
   const findings = [];
 
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
     if (!line || isCommentLine(line) || shouldIgnoreLikelyPlaceholder(line)) {
       continue;
     }
@@ -232,6 +274,7 @@ const detectHardcodedSecrets = (lines, filePath, dedupeKeys) => {
           severity: pattern.severity,
           confidence: pattern.confidence,
           filePath,
+          line: lineIndex + 1,
           message: pattern.message,
           context: pattern.context,
           suggestion: pattern.suggestion
@@ -243,7 +286,7 @@ const detectHardcodedSecrets = (lines, filePath, dedupeKeys) => {
   return findings;
 };
 
-const detectSqlInjectionRisks = (fileContent, filePath, dedupeKeys, taintedVariableMap) => {
+const detectSqlInjectionRisks = (fileContent, filePath, dedupeKeys, taintedVariableMap, getLineNumberForIndex) => {
   const findings = [];
   const sqlFlowVariableMap = new Map();
 
@@ -278,6 +321,7 @@ const detectSqlInjectionRisks = (fileContent, filePath, dedupeKeys, taintedVaria
             severity: 'high',
             confidence: taintFlow ? 'high' : 'medium',
             filePath,
+            line: getLineNumberForIndex(assignmentMatch.index),
             message: 'Potential SQL injection risk: query string built from input data.',
             context,
             suggestion: 'Use parameterized placeholders instead of building SQL with input.'
@@ -326,6 +370,7 @@ const detectSqlInjectionRisks = (fileContent, filePath, dedupeKeys, taintedVaria
             severity: 'high',
             confidence,
             filePath,
+            line: getLineNumberForIndex(match.index),
             message: 'Potential SQL injection risk: dynamic query with input data.',
             context,
             suggestion: 'Use parameterized queries or prepared statements.'
@@ -362,7 +407,8 @@ const isLikelyDynamicDomAssignment = (line) => {
 const detectXssRisks = (lines, filePath, dedupeKeys, taintedVariableMap) => {
   const findings = [];
 
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
     if (!line || isCommentLine(line)) {
       continue;
     }
@@ -381,6 +427,7 @@ const detectXssRisks = (lines, filePath, dedupeKeys, taintedVariableMap) => {
             severity: 'high',
             confidence: taintFlow ? 'high' : 'medium',
             filePath,
+            line: lineIndex + 1,
             message: 'dangerouslySetInnerHTML usage may allow XSS.',
             context,
             suggestion: 'Sanitize HTML with a trusted sanitizer before rendering.'
@@ -403,6 +450,7 @@ const detectXssRisks = (lines, filePath, dedupeKeys, taintedVariableMap) => {
             severity: 'high',
             confidence: taintFlow ? 'high' : 'medium',
             filePath,
+            line: lineIndex + 1,
             message: 'Dynamic HTML assignment detected; possible XSS vector.',
             context,
             suggestion: 'Prefer textContent or sanitize untrusted HTML inputs.'
@@ -425,6 +473,7 @@ const detectXssRisks = (lines, filePath, dedupeKeys, taintedVariableMap) => {
             severity: taintFlow ? 'high' : 'medium',
             confidence: taintFlow ? 'high' : 'medium',
             filePath,
+            line: lineIndex + 1,
             message: 'Direct DOM HTML injection API usage detected.',
             context,
             suggestion: 'Avoid direct HTML injection with unsanitized data.'
@@ -437,7 +486,7 @@ const detectXssRisks = (lines, filePath, dedupeKeys, taintedVariableMap) => {
   return findings;
 };
 
-const detectInsecureLogging = (fileContent, filePath, dedupeKeys, taintedVariableMap) => {
+const detectInsecureLogging = (fileContent, filePath, dedupeKeys, taintedVariableMap, getLineNumberForIndex) => {
   const findings = [];
   let match = LOG_CALL_REGEX.exec(fileContent);
 
@@ -474,6 +523,7 @@ const detectInsecureLogging = (fileContent, filePath, dedupeKeys, taintedVariabl
             severity,
             confidence,
             filePath,
+            line: getLineNumberForIndex(match.index),
             message,
             context,
             suggestion: 'Log only minimal, non-sensitive fields and redact secrets.'
@@ -501,12 +551,13 @@ const scanFile = ({ filePath, fileContent }) => {
   const lines = fileContent.split(/\r?\n/);
   const dedupeKeys = new Set();
   const taintedVariableMap = extractTaintedVariables(lines);
+  const getLineNumberForIndex = createLineNumberResolver(fileContent);
 
   return [
     ...detectHardcodedSecrets(lines, filePath, dedupeKeys),
-    ...detectSqlInjectionRisks(fileContent, filePath, dedupeKeys, taintedVariableMap),
+    ...detectSqlInjectionRisks(fileContent, filePath, dedupeKeys, taintedVariableMap, getLineNumberForIndex),
     ...detectXssRisks(lines, filePath, dedupeKeys, taintedVariableMap),
-    ...detectInsecureLogging(fileContent, filePath, dedupeKeys, taintedVariableMap)
+    ...detectInsecureLogging(fileContent, filePath, dedupeKeys, taintedVariableMap, getLineNumberForIndex)
   ];
 };
 

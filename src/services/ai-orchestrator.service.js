@@ -9,6 +9,8 @@ const MAX_FILES_PER_REQUEST = 5;
 const MAX_CHUNKS_PER_FILE = 3;
 const MAX_LINES_PER_CHUNK = 500;
 const MAX_CHUNK_CHARACTERS = 7000;
+const MAX_AI_FILE_CHARACTERS = 20000;
+const MAX_TOTAL_AI_INPUT_CHARACTERS = 32000;
 const SEVERITY_PRIORITY = {
   high: 3,
   medium: 2,
@@ -216,8 +218,24 @@ const runDebuggerPipeline = async ({ extractionFolder, selectedFiles, requestId 
   const uniqueFixes = new Set();
   let processedChunks = 0;
   let fallbackUsed = false;
+  let totalAiInputCharacters = 0;
+  let totalInputLimitExceeded = false;
+
+  if (selectedFiles.length > MAX_FILES_PER_REQUEST) {
+    fallbackUsed = true;
+    addIssueForReport(issueMap, {
+      issue: `AI input limited to first ${MAX_FILES_PER_REQUEST} file(s)`,
+      severity: 'low',
+      confidence: 'high',
+      file: 'global'
+    });
+  }
 
   for (const inputFilePath of limitedFiles) {
+    if (totalInputLimitExceeded) {
+      break;
+    }
+
     const safeAbsolutePath = resolveSafeFilePath(extractionDirectory, inputFilePath);
     const relativePathFromExtraction = toPortablePath(path.relative(extractionDirectory, safeAbsolutePath));
     const displayFilePath = toPortablePath(path.join(extractionFolder, relativePathFromExtraction));
@@ -244,6 +262,17 @@ const runDebuggerPipeline = async ({ extractionFolder, selectedFiles, requestId 
       addIssueForReport(issueMap, {
         issue: 'File is empty and was skipped',
         severity: 'low',
+        confidence: 'high',
+        file: displayFilePath
+      });
+      continue;
+    }
+
+    if (fileContent.length > MAX_AI_FILE_CHARACTERS) {
+      fallbackUsed = true;
+      addIssueForReport(issueMap, {
+        issue: 'AI input rejected: file content too large for AI analysis',
+        severity: 'medium',
         confidence: 'high',
         file: displayFilePath
       });
@@ -282,8 +311,21 @@ const runDebuggerPipeline = async ({ extractionFolder, selectedFiles, requestId 
         `// chunk: ${chunkIndex}/${chunksToAnalyze.length}\n` +
         safeChunkContent;
 
+      if (totalAiInputCharacters + snippetWithContext.length > MAX_TOTAL_AI_INPUT_CHARACTERS) {
+        fallbackUsed = true;
+        totalInputLimitExceeded = true;
+        addIssueForReport(issueMap, {
+          issue: 'AI input rejected: total input size limit exceeded',
+          severity: 'medium',
+          confidence: 'high',
+          file: displayFilePath
+        });
+        break;
+      }
+
       try {
         const debuggerResult = await aiService.explainCode(snippetWithContext);
+        totalAiInputCharacters += snippetWithContext.length;
         processedChunks += 1;
         if (debuggerResult && debuggerResult.fallbackUsed === true) {
           fallbackUsed = true;

@@ -1,0 +1,61 @@
+{
+  "reportId": "2b077bab-a001-4481-a155-8d222a071fe5",
+  "timestamp": "2026-03-28T08:04:27.141Z",
+  "reportData": {
+    "success": true,
+    "status": "completed",
+    "aiUsed": false,
+    "fallbackUsed": true,
+    "filesAnalyzed": 1,
+    "message": "Analysis completed successfully",
+    "data": {
+      "reportId": "2b077bab-a001-4481-a155-8d222a071fe5",
+      "fileName": "ae6c0b78-c81c-4610-b33b-20aa20f67b72.zip",
+      "size": 149,
+      "extractionFolder": "uploads/d4c2ee18-807f-49c0-9df0-1e25841ee431",
+      "extractedFiles": [
+        "index.js"
+      ],
+      "totalFiles": 1,
+      "report": {
+        "totalFiles": 1,
+        "jsFiles": 1,
+        "tsFiles": 0,
+        "jsonFiles": 0,
+        "largeFiles": [],
+        "emptyFiles": [],
+        "selectedFiles": [
+          "index.js"
+        ],
+        "securityFindings": [],
+        "securitySummary": {
+          "high": 0,
+          "medium": 0,
+          "low": 0
+        },
+        "execution": {
+          "attempted": true,
+          "success": false,
+          "error": "Cannot read properties of undefined (reading 'stdout')",
+          "stdout": "",
+          "stderr": "",
+          "executionTime": 0
+        }
+      },
+      "aiReport": {
+        "summary": "AI disabled in tests",
+        "summaryStats": {
+          "high": 0,
+          "medium": 0,
+          "low": 0
+        },
+        "issues": [],
+        "files": [],
+        "fixes": [],
+        "aiUsed": false,
+        "fallbackUsed": true
+      }
+    },
+    "requestId": "574e4bbb-9932-4307-a24b-7fc51ea6ff3d"
+  }
+}
