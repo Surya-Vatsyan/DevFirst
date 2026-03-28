@@ -1,0 +1,63 @@
+{
+  "reportId": "5855a791-4bc5-4756-9ffc-bcad543de5dc",
+  "timestamp": "2026-03-28T15:29:28.844Z",
+  "reportData": {
+    "success": true,
+    "status": "completed",
+    "aiUsed": false,
+    "fallbackUsed": true,
+    "filesAnalyzed": 2,
+    "message": "Analysis completed successfully",
+    "data": {
+      "reportId": "5855a791-4bc5-4756-9ffc-bcad543de5dc",
+      "fileName": "de319424-b02d-4786-a24c-0acf3b54a347.zip",
+      "size": 274,
+      "extractionFolder": "uploads/d52345d9-6b0b-4bf2-a597-375ce171bf64",
+      "extractedFiles": [
+        "index.js",
+        "src/util.js"
+      ],
+      "totalFiles": 2,
+      "report": {
+        "totalFiles": 2,
+        "jsFiles": 2,
+        "tsFiles": 0,
+        "jsonFiles": 0,
+        "largeFiles": [],
+        "emptyFiles": [],
+        "selectedFiles": [
+          "src/util.js",
+          "index.js"
+        ],
+        "securityFindings": [],
+        "securitySummary": {
+          "high": 0,
+          "medium": 0,
+          "low": 0
+        },
+        "execution": {
+          "attempted": true,
+          "success": true,
+          "error": "",
+          "stdout": "Hello from sandbox",
+          "stderr": "",
+          "executionTime": 42
+        }
+      },
+      "aiReport": {
+        "summary": "AI disabled in tests",
+        "summaryStats": {
+          "high": 0,
+          "medium": 0,
+          "low": 0
+        },
+        "issues": [],
+        "files": [],
+        "fixes": [],
+        "aiUsed": false,
+        "fallbackUsed": true
+      }
+    },
+    "requestId": "ff2260fc-a3f9-48a4-9634-a14d00831f84"
+  }
+}
