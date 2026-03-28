@@ -21,6 +21,13 @@ const DEFAULT_SUGGESTION = 'Review and remediate this issue.';
 const DEFAULT_MESSAGE = 'Issue detected.';
 const DEFAULT_FILE = 'unknown';
 const RUNTIME_FINDING_FILE = 'sandbox/runtime';
+const DEFAULT_REASON = 'Review this finding and validate behavior.';
+const INTERNAL_TOOL_FILE_PATHS = new Set([
+  'src/core/analyzeproject.js',
+  'src/services/securityscanner.js',
+  'sandbox/executor.js',
+  'cli/index.js'
+]);
 const SEVERITY_PRIORITY = {
   high: 3,
   medium: 2,
@@ -167,41 +174,161 @@ const buildFindingsBySeverity = (findings) => {
   return groupedFindings;
 };
 
-const toTopRisk = (finding) => {
-  const normalized = normalizeFinding(finding);
-  const reason =
-    typeof normalized.reason === 'string' && normalized.reason.trim().length > 0
-      ? normalized.reason
-      : normalized.context;
+const normalizePortableFilePath = (filePath) =>
+  String(filePath || '')
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .toLowerCase();
 
-  return {
-    message: normalized.message,
-    file: normalized.file,
-    severity: normalized.severity,
-    reason
-  };
+const isIgnoredFindingFile = (filePath) => {
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) {
+    return false;
+  }
+
+  const normalizedPath = normalizePortableFilePath(filePath);
+  if (!normalizedPath) {
+    return false;
+  }
+
+  if (
+    normalizedPath === NODE_MODULES_DIRECTORY ||
+    normalizedPath.startsWith(`${NODE_MODULES_DIRECTORY}/`) ||
+    normalizedPath.includes(`/${NODE_MODULES_DIRECTORY}/`)
+  ) {
+    return true;
+  }
+
+  if (INTERNAL_TOOL_FILE_PATHS.has(normalizedPath)) {
+    return true;
+  }
+
+  const segments = normalizedPath.split('/').filter(Boolean);
+  return segments.some((segment) => segment.startsWith('tmp'));
 };
 
-const buildTopRisks = (sortedFindings) => {
-  if (!Array.isArray(sortedFindings) || sortedFindings.length === 0) {
+const buildGroupedFindings = (findings) => {
+  const groupedFindingsMap = new Map();
+
+  for (const finding of findings) {
+    const normalized = normalizeFinding(finding);
+    if (isIgnoredFindingFile(normalized.file)) {
+      continue;
+    }
+
+    const groupingKey = `${normalized.message}|${normalized.suggestion}`;
+    if (!groupedFindingsMap.has(groupingKey)) {
+      groupedFindingsMap.set(groupingKey, {
+        message: normalized.message,
+        severity: normalized.severity,
+        confidence: normalized.confidence,
+        suggestion: normalized.suggestion,
+        occurrences: [],
+        count: 0,
+        _occurrenceSet: new Set()
+      });
+    }
+
+    const group = groupedFindingsMap.get(groupingKey);
+    const groupSeverity = normalizeSeverity(group.severity);
+    const findingSeverity = normalizeSeverity(normalized.severity);
+    if (SEVERITY_PRIORITY[findingSeverity] > SEVERITY_PRIORITY[groupSeverity]) {
+      group.severity = findingSeverity;
+    }
+
+    const groupConfidence = normalizeConfidence(group.confidence);
+    const findingConfidence = normalizeConfidence(normalized.confidence);
+    if (CONFIDENCE_PRIORITY[findingConfidence] > CONFIDENCE_PRIORITY[groupConfidence]) {
+      group.confidence = findingConfidence;
+    }
+
+    const occurrenceSignature = `${normalized.file}|${normalized.line}|${normalized.context}`;
+    if (!group._occurrenceSet.has(occurrenceSignature)) {
+      group._occurrenceSet.add(occurrenceSignature);
+      group.occurrences.push({
+        file: normalized.file,
+        line: normalized.line,
+        context: normalized.context
+      });
+    }
+  }
+
+  const groupedFindings = Array.from(groupedFindingsMap.values()).map((group) => {
+    const occurrences = [...group.occurrences].sort((leftOccurrence, rightOccurrence) => {
+      const leftFile = typeof leftOccurrence.file === 'string' ? leftOccurrence.file : '';
+      const rightFile = typeof rightOccurrence.file === 'string' ? rightOccurrence.file : '';
+      const fileDelta = leftFile.localeCompare(rightFile);
+      if (fileDelta !== 0) {
+        return fileDelta;
+      }
+
+      return normalizeLineNumber(leftOccurrence.line) - normalizeLineNumber(rightOccurrence.line);
+    });
+
+    return {
+      message: group.message,
+      severity: normalizeSeverity(group.severity),
+      confidence: normalizeConfidence(group.confidence),
+      suggestion: group.suggestion,
+      occurrences,
+      count: occurrences.length
+    };
+  });
+
+  return groupedFindings.sort((leftGroup, rightGroup) => {
+    const severityDelta =
+      SEVERITY_PRIORITY[normalizeSeverity(rightGroup.severity)] - SEVERITY_PRIORITY[normalizeSeverity(leftGroup.severity)];
+    if (severityDelta !== 0) {
+      return severityDelta;
+    }
+
+    const countDelta = rightGroup.count - leftGroup.count;
+    if (countDelta !== 0) {
+      return countDelta;
+    }
+
+    const confidenceDelta =
+      CONFIDENCE_PRIORITY[normalizeConfidence(rightGroup.confidence)] -
+      CONFIDENCE_PRIORITY[normalizeConfidence(leftGroup.confidence)];
+    if (confidenceDelta !== 0) {
+      return confidenceDelta;
+    }
+
+    const leftMessage = typeof leftGroup.message === 'string' ? leftGroup.message : '';
+    const rightMessage = typeof rightGroup.message === 'string' ? rightGroup.message : '';
+    return leftMessage.localeCompare(rightMessage);
+  });
+};
+
+const buildTopRisks = (groupedFindings) => {
+  if (!Array.isArray(groupedFindings) || groupedFindings.length === 0) {
     return [];
   }
 
-  const highFindings = sortedFindings.filter((finding) => normalizeSeverity(finding.severity) === 'high');
-  if (highFindings.length > 0) {
-    return highFindings.slice(0, 3).map((finding) => toTopRisk(finding));
-  }
+  const highGroups = groupedFindings.filter((group) => normalizeSeverity(group.severity) === 'high');
+  const mediumGroups = groupedFindings.filter((group) => normalizeSeverity(group.severity) === 'medium');
 
-  const mediumFindings = sortedFindings.filter((finding) => normalizeSeverity(finding.severity) === 'medium');
-  if (mediumFindings.length > 0) {
-    return mediumFindings.slice(0, 3).map((finding) => toTopRisk(finding));
-  }
+  const targetGroups = highGroups.length > 0 ? highGroups : mediumGroups.length > 0 ? mediumGroups : groupedFindings;
+  return targetGroups.slice(0, 3).map((group) => {
+    const firstOccurrence = Array.isArray(group.occurrences) && group.occurrences.length > 0 ? group.occurrences[0] : null;
+    const reason =
+      firstOccurrence && typeof firstOccurrence.context === 'string' && firstOccurrence.context.trim().length > 0
+        ? firstOccurrence.context
+        : DEFAULT_REASON;
 
-  return sortedFindings
-    .filter((finding) => normalizeSeverity(finding.severity) === 'low')
-    .slice(0, 3)
-    .map((finding) => toTopRisk(finding));
+    return {
+      message: group.message,
+      file: firstOccurrence && typeof firstOccurrence.file === 'string' ? firstOccurrence.file : DEFAULT_FILE,
+      severity: normalizeSeverity(group.severity),
+      reason
+    };
+  });
 };
+
+const filterNoiseFindings = (findings) =>
+  findings.filter((finding) => {
+    const normalized = normalizeFinding(finding);
+    return !isIgnoredFindingFile(normalized.file);
+  });
 
 const getExecutionFindingSignature = (finding) => {
   const normalized = normalizeFinding(finding);
@@ -349,9 +476,11 @@ const normalizeAiReport = (aiReport) => {
 
 const normalizeResult = ({ success, error, summary, findings, execution, aiReport }) => {
   const normalizedFindings = Array.isArray(findings) ? dedupeFindings(findings) : [];
-  const prioritizedFindings = sortFindingsByPriority(normalizedFindings);
+  const filteredFindings = filterNoiseFindings(normalizedFindings);
+  const prioritizedFindings = sortFindingsByPriority(filteredFindings);
   const findingsBySeverity = buildFindingsBySeverity(prioritizedFindings);
-  const topRisks = buildTopRisks(prioritizedFindings);
+  const groupedFindings = buildGroupedFindings(prioritizedFindings);
+  const topRisks = buildTopRisks(groupedFindings);
   const resolvedSummary = summary && typeof summary === 'object' && !Array.isArray(summary) ? summary : {};
   const totalFiles =
     Number.isInteger(resolvedSummary.totalFiles) && resolvedSummary.totalFiles >= 0 ? resolvedSummary.totalFiles : 0;
@@ -367,6 +496,7 @@ const normalizeResult = ({ success, error, summary, findings, execution, aiRepor
       topRisksCount: topRisks.length
     },
     findings: prioritizedFindings,
+    groupedFindings,
     findingsBySeverity,
     topRisks,
     execution: normalizeExecution(execution),
