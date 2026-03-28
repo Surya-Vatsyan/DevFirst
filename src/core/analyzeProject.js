@@ -20,6 +20,17 @@ const DEFAULT_CONTEXT = 'No taint flow context available.';
 const DEFAULT_SUGGESTION = 'Review and remediate this issue.';
 const DEFAULT_MESSAGE = 'Issue detected.';
 const DEFAULT_FILE = 'unknown';
+const RUNTIME_FINDING_FILE = 'sandbox/runtime';
+const SEVERITY_PRIORITY = {
+  high: 3,
+  medium: 2,
+  low: 1
+};
+const CONFIDENCE_PRIORITY = {
+  high: 3,
+  medium: 2,
+  low: 1
+};
 
 const buildDefaultSeveritySummary = () => ({
   high: 0,
@@ -30,7 +41,8 @@ const buildDefaultSeveritySummary = () => ({
 const buildDefaultSummary = () => ({
   totalFiles: 0,
   issuesFound: 0,
-  severity: buildDefaultSeveritySummary()
+  severity: buildDefaultSeveritySummary(),
+  topRisksCount: 0
 });
 
 const buildDefaultExecution = () => ({
@@ -112,6 +124,198 @@ const buildSeveritySummary = (findings) => {
   return severitySummary;
 };
 
+const sortFindingsByPriority = (findings) =>
+  [...findings].sort((leftFinding, rightFinding) => {
+    const leftSeverity = normalizeSeverity(leftFinding.severity);
+    const rightSeverity = normalizeSeverity(rightFinding.severity);
+    const severityDelta = SEVERITY_PRIORITY[rightSeverity] - SEVERITY_PRIORITY[leftSeverity];
+    if (severityDelta !== 0) {
+      return severityDelta;
+    }
+
+    const leftConfidence = normalizeConfidence(leftFinding.confidence);
+    const rightConfidence = normalizeConfidence(rightFinding.confidence);
+    const confidenceDelta = CONFIDENCE_PRIORITY[rightConfidence] - CONFIDENCE_PRIORITY[leftConfidence];
+    if (confidenceDelta !== 0) {
+      return confidenceDelta;
+    }
+
+    const leftFile = typeof leftFinding.file === 'string' ? leftFinding.file : '';
+    const rightFile = typeof rightFinding.file === 'string' ? rightFinding.file : '';
+    const fileDelta = leftFile.localeCompare(rightFile);
+    if (fileDelta !== 0) {
+      return fileDelta;
+    }
+
+    const leftMessage = typeof leftFinding.message === 'string' ? leftFinding.message : '';
+    const rightMessage = typeof rightFinding.message === 'string' ? rightFinding.message : '';
+    return leftMessage.localeCompare(rightMessage);
+  });
+
+const buildFindingsBySeverity = (findings) => {
+  const groupedFindings = {
+    high: [],
+    medium: [],
+    low: []
+  };
+
+  for (const finding of findings) {
+    const severity = normalizeSeverity(finding.severity);
+    groupedFindings[severity].push(finding);
+  }
+
+  return groupedFindings;
+};
+
+const toTopRisk = (finding) => {
+  const normalized = normalizeFinding(finding);
+  const reason =
+    typeof normalized.reason === 'string' && normalized.reason.trim().length > 0
+      ? normalized.reason
+      : normalized.context;
+
+  return {
+    message: normalized.message,
+    file: normalized.file,
+    severity: normalized.severity,
+    reason
+  };
+};
+
+const buildTopRisks = (sortedFindings) => {
+  if (!Array.isArray(sortedFindings) || sortedFindings.length === 0) {
+    return [];
+  }
+
+  const highFindings = sortedFindings.filter((finding) => normalizeSeverity(finding.severity) === 'high');
+  if (highFindings.length > 0) {
+    return highFindings.slice(0, 3).map((finding) => toTopRisk(finding));
+  }
+
+  const mediumFindings = sortedFindings.filter((finding) => normalizeSeverity(finding.severity) === 'medium');
+  if (mediumFindings.length > 0) {
+    return mediumFindings.slice(0, 3).map((finding) => toTopRisk(finding));
+  }
+
+  return sortedFindings
+    .filter((finding) => normalizeSeverity(finding.severity) === 'low')
+    .slice(0, 3)
+    .map((finding) => toTopRisk(finding));
+};
+
+const getExecutionFindingSignature = (finding) => {
+  const normalized = normalizeFinding(finding);
+  const normalizedType = typeof normalized.type === 'string' && normalized.type.trim().length > 0 ? normalized.type : 'unknown';
+  const normalizedReason =
+    typeof normalized.reason === 'string' && normalized.reason.trim().length > 0 ? normalized.reason.trim() : '';
+
+  return [
+    normalizedType,
+    normalized.severity,
+    normalized.confidence,
+    normalized.file,
+    String(normalized.line),
+    normalized.message,
+    normalized.context,
+    normalized.suggestion,
+    normalizedReason
+  ].join('|');
+};
+
+const dedupeFindings = (findings) => {
+  const uniqueFindings = [];
+  const seenSignatures = new Set();
+
+  for (const finding of findings) {
+    const normalizedFinding = normalizeFinding(finding);
+    const signature = getExecutionFindingSignature(normalizedFinding);
+    if (seenSignatures.has(signature)) {
+      continue;
+    }
+
+    seenSignatures.add(signature);
+    uniqueFindings.push(normalizedFinding);
+  }
+
+  return uniqueFindings;
+};
+
+const buildExecutionInsightFinding = (execution) => {
+  if (!execution || typeof execution !== 'object' || Array.isArray(execution)) {
+    return null;
+  }
+
+  if (!execution.attempted || execution.success) {
+    return null;
+  }
+
+  const normalizedError = typeof execution.error === 'string' ? execution.error.trim() : '';
+  if (!normalizedError) {
+    return null;
+  }
+
+  const executionFile =
+    typeof execution.entryFile === 'string' && execution.entryFile.trim().length > 0 ? execution.entryFile : RUNTIME_FINDING_FILE;
+
+  if (normalizedError === 'Execution timed out') {
+    return {
+      type: 'runtime',
+      severity: 'high',
+      confidence: 'high',
+      file: executionFile,
+      line: -1,
+      message: 'Potential infinite loop or blocking operation',
+      reason: 'Code execution exceeded allowed time limit (5 seconds)',
+      context: 'Code execution exceeded allowed time limit (5 seconds)',
+      suggestion: 'Ensure loops and async operations have proper termination conditions'
+    };
+  }
+
+  if (normalizedError.includes('Process limit exceeded')) {
+    return {
+      type: 'security',
+      severity: 'high',
+      confidence: 'high',
+      file: executionFile,
+      line: -1,
+      message: 'Potential fork bomb or uncontrolled process spawning',
+      reason: 'Execution attempted to create too many processes',
+      context: 'Execution attempted to create too many processes',
+      suggestion: 'Avoid spawning uncontrolled child processes'
+    };
+  }
+
+  if (normalizedError.includes('Sandbox restriction')) {
+    return {
+      type: 'security',
+      severity: 'medium',
+      confidence: 'high',
+      file: executionFile,
+      line: -1,
+      message: 'Attempted restricted operation (network or system access)',
+      reason: 'Sandbox blocked unsafe operation',
+      context: 'Sandbox blocked unsafe operation',
+      suggestion: 'Avoid accessing external network or restricted system resources'
+    };
+  }
+
+  if (normalizedError === 'Sandbox process failed to initialize') {
+    return {
+      type: 'system',
+      severity: 'low',
+      confidence: 'low',
+      file: executionFile,
+      line: -1,
+      message: 'Execution environment failed to initialize',
+      reason: 'Sandbox process could not start',
+      context: 'Sandbox process could not start',
+      suggestion: 'Check environment or dependencies'
+    };
+  }
+
+  return null;
+};
+
 const normalizeExecution = (execution) => {
   if (!execution || typeof execution !== 'object' || Array.isArray(execution)) {
     return buildDefaultExecution();
@@ -144,14 +348,14 @@ const normalizeAiReport = (aiReport) => {
 };
 
 const normalizeResult = ({ success, error, summary, findings, execution, aiReport }) => {
-  const normalizedFindings = Array.isArray(findings) ? findings.map((finding) => normalizeFinding(finding)) : [];
+  const normalizedFindings = Array.isArray(findings) ? dedupeFindings(findings) : [];
+  const prioritizedFindings = sortFindingsByPriority(normalizedFindings);
+  const findingsBySeverity = buildFindingsBySeverity(prioritizedFindings);
+  const topRisks = buildTopRisks(prioritizedFindings);
   const resolvedSummary = summary && typeof summary === 'object' && !Array.isArray(summary) ? summary : {};
   const totalFiles =
     Number.isInteger(resolvedSummary.totalFiles) && resolvedSummary.totalFiles >= 0 ? resolvedSummary.totalFiles : 0;
-  const issuesFound =
-    Number.isInteger(resolvedSummary.issuesFound) && resolvedSummary.issuesFound >= 0
-      ? resolvedSummary.issuesFound
-      : normalizedFindings.length;
+  const issuesFound = prioritizedFindings.length;
 
   return {
     success: Boolean(success),
@@ -159,9 +363,12 @@ const normalizeResult = ({ success, error, summary, findings, execution, aiRepor
     summary: {
       totalFiles,
       issuesFound,
-      severity: buildSeveritySummary(normalizedFindings)
+      severity: buildSeveritySummary(prioritizedFindings),
+      topRisksCount: topRisks.length
     },
-    findings: normalizedFindings,
+    findings: prioritizedFindings,
+    findingsBySeverity,
+    topRisks,
     execution: normalizeExecution(execution),
     aiReport: normalizeAiReport(aiReport)
   };
@@ -411,6 +618,8 @@ async function analyzeProject(projectPath) {
           projectPath: resolvedProjectPath,
           entryFile
         });
+        const executionInsightFinding = buildExecutionInsightFinding(execution);
+        const mergedFindings = executionInsightFinding ? dedupeFindings([...findings, executionInsightFinding]) : findings;
         const aiReport = await runAiLayer(jsFileEntries);
 
         if (readErrors.length > 0) {
@@ -422,10 +631,10 @@ async function analyzeProject(projectPath) {
           error: null,
           summary: {
             totalFiles: jsFileEntries.length,
-            issuesFound: findings.length,
-            severity: buildSeveritySummary(findings)
+            issuesFound: mergedFindings.length,
+            severity: buildSeveritySummary(mergedFindings)
           },
-          findings,
+          findings: mergedFindings,
           execution,
           aiReport
         });

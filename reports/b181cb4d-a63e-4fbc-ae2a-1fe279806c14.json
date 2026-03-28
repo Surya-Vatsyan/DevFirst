@@ -1,0 +1,61 @@
+{
+  "reportId": "b181cb4d-a63e-4fbc-ae2a-1fe279806c14",
+  "timestamp": "2026-03-28T15:41:04.083Z",
+  "reportData": {
+    "success": true,
+    "status": "completed",
+    "aiUsed": false,
+    "fallbackUsed": true,
+    "filesAnalyzed": 1,
+    "message": "Analysis completed successfully",
+    "data": {
+      "reportId": "b181cb4d-a63e-4fbc-ae2a-1fe279806c14",
+      "fileName": "775921e3-4a90-4e9a-82a9-212707b63119.zip",
+      "size": 149,
+      "extractionFolder": "uploads/897a6d5a-f6cc-480f-9733-7d3fab2e28ca",
+      "extractedFiles": [
+        "index.js"
+      ],
+      "totalFiles": 1,
+      "report": {
+        "totalFiles": 1,
+        "jsFiles": 1,
+        "tsFiles": 0,
+        "jsonFiles": 0,
+        "largeFiles": [],
+        "emptyFiles": [],
+        "selectedFiles": [
+          "index.js"
+        ],
+        "securityFindings": [],
+        "securitySummary": {
+          "high": 0,
+          "medium": 0,
+          "low": 0
+        },
+        "execution": {
+          "attempted": true,
+          "success": false,
+          "error": "Sandbox process failed to initialize",
+          "stdout": "",
+          "stderr": "",
+          "executionTime": 0
+        }
+      },
+      "aiReport": {
+        "summary": "AI disabled in tests",
+        "summaryStats": {
+          "high": 0,
+          "medium": 0,
+          "low": 0
+        },
+        "issues": [],
+        "files": [],
+        "fixes": [],
+        "aiUsed": false,
+        "fallbackUsed": true
+      }
+    },
+    "requestId": "65dce98e-bc4c-4d1c-ae61-ee78a07b1faa"
+  }
+}

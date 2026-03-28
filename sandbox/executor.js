@@ -167,14 +167,6 @@ function mapExecutionError({ timedOut, processError, stderrText, code, signal })
     return 'Execution timed out';
   }
 
-  if (processError) {
-    const normalizedMessage = processError.message.toLowerCase();
-    if (normalizedMessage.includes('eperm') || normalizedMessage.includes('eacces')) {
-      return 'Sandbox restriction triggered';
-    }
-    return `Failed to start Docker process: ${processError.message}`;
-  }
-
   const normalizedStderr = (stderrText || '').toLowerCase();
   if (normalizedStderr.includes('out of memory') || normalizedStderr.includes('oom') || normalizedStderr.includes('137')) {
     return 'Memory limit exceeded';
@@ -195,6 +187,19 @@ function mapExecutionError({ timedOut, processError, stderrText, code, signal })
     normalizedStderr.includes('read-only file system')
   ) {
     return 'Sandbox restriction triggered';
+  }
+
+  if (processError) {
+    const normalizedMessage = String(processError.message || '').toLowerCase();
+    if (
+      normalizedMessage.includes('eperm') ||
+      normalizedMessage.includes('eacces') ||
+      normalizedMessage.includes('permission denied') ||
+      normalizedMessage.includes('operation not permitted')
+    ) {
+      return 'Sandbox restriction triggered';
+    }
+    return `Execution failed: ${processError.message}`;
   }
 
   if (signal) {
@@ -389,8 +394,7 @@ function runDocker({ codePath, entryFile }) {
         stdio: ['ignore', 'pipe', 'pipe']
       });
     } catch (error) {
-      processError = error;
-      void complete({ code: null, signal: null });
+      finalizeInitializationFailure();
       return;
     }
 
