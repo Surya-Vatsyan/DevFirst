@@ -166,12 +166,24 @@ const mapExecutionError = (error) => {
 
   const normalized = error.toLowerCase();
 
+  if (
+    normalized.includes('spawn docker enoent') ||
+    normalized.includes("'docker' is not recognized") ||
+    normalized.includes('"docker" is not recognized')
+  ) {
+    return 'Docker not found. Please install and run Docker.';
+  }
+
+  if (normalized.includes('sandbox process failed to initialize')) {
+    return 'Docker not found. Please install and run Docker.';
+  }
+
   if (normalized.includes('spawn eperm') || normalized.includes('eacces')) {
     return 'Sandbox execution failed (Docker permission issue)';
   }
 
   if (normalized.includes('timed out') || normalized.includes('timeout')) {
-    return 'Execution timed out (possible infinite loop)';
+    return 'Execution timed out (possible infinite loop or blocking operation)';
   }
 
   if (normalized.includes('process limit exceeded')) {

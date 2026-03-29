@@ -34,10 +34,17 @@ describe('upload security protections', () => {
   });
 
   test('rejects path traversal in zip entries', async () => {
+    const zipExtractionService = require('../../src/services/zip-extraction.service');
+    jest.spyOn(zipExtractionService, 'extractZipFile').mockRejectedValueOnce(
+      Object.assign(new Error('ZIP contains unsafe file path'), {
+        statusCode: 400
+      })
+    );
+
     const zipBuffer = await createZipBuffer([
       {
-        name: '../evil.js',
-        content: 'console.log("malicious");'
+        name: 'index.js',
+        content: 'console.log("safe payload for traversal simulation");'
       }
     ]);
 

@@ -2,6 +2,7 @@
 
 const { mapExecutionError } = require('./formatter');
 const {
+  CONFIDENCE_PRIORITY,
   MAX_PRINTED_GROUPED_ISSUES,
   MAX_PRINTED_GROUP_LOCATIONS,
   UNKNOWN_FILE,
@@ -9,6 +10,7 @@ const {
   DEFAULT_SUGGESTION,
   DEFAULT_REASON,
   normalizeSeverity,
+  normalizeConfidence,
   normalizeLine,
   formatFileLocation
 } = require('./utils');
@@ -45,7 +47,89 @@ const printSummarySection = ({ filesAnalyzed, issuesFound, severityCounts }) => 
   process.stdout.write(`\u{1F7E2} LOW (${severityCounts.low})\n\n`);
 };
 
-const printDetailedFindingsSection = (groupedFindings) => {
+const compareFindingsForGroupContext = (leftFinding, rightFinding) => {
+  const confidenceDelta =
+    CONFIDENCE_PRIORITY[normalizeConfidence(rightFinding && rightFinding.confidence)] -
+    CONFIDENCE_PRIORITY[normalizeConfidence(leftFinding && leftFinding.confidence)];
+  if (confidenceDelta !== 0) {
+    return confidenceDelta;
+  }
+
+  const leftFile = leftFinding && typeof leftFinding.file === 'string' ? leftFinding.file : '';
+  const rightFile = rightFinding && typeof rightFinding.file === 'string' ? rightFinding.file : '';
+  const fileDelta = leftFile.localeCompare(rightFile);
+  if (fileDelta !== 0) {
+    return fileDelta;
+  }
+
+  const lineDelta = normalizeLine(leftFinding && leftFinding.line) - normalizeLine(rightFinding && rightFinding.line);
+  if (lineDelta !== 0) {
+    return lineDelta;
+  }
+
+  const leftSuggestion = leftFinding && typeof leftFinding.suggestion === 'string' ? leftFinding.suggestion : '';
+  const rightSuggestion = rightFinding && typeof rightFinding.suggestion === 'string' ? rightFinding.suggestion : '';
+  return leftSuggestion.localeCompare(rightSuggestion);
+};
+
+const resolveRepresentativeFinding = ({ group, findings }) => {
+  if (!group || typeof group !== 'object' || Array.isArray(group)) {
+    return null;
+  }
+
+  if (!Array.isArray(findings) || findings.length === 0) {
+    return null;
+  }
+
+  const targetMessage = typeof group.message === 'string' ? group.message : '';
+  const targetSeverity = normalizeSeverity(group.severity);
+  const targetSuggestion = typeof group.suggestion === 'string' ? group.suggestion : '';
+
+  const strictMatches = findings.filter((finding) => {
+    const findingMessage = finding && typeof finding.message === 'string' ? finding.message : '';
+    const findingSeverity = normalizeSeverity(finding && finding.severity);
+    const findingSuggestion = finding && typeof finding.suggestion === 'string' ? finding.suggestion : '';
+
+    return findingMessage === targetMessage && findingSeverity === targetSeverity && findingSuggestion === targetSuggestion;
+  });
+
+  const looseMatches =
+    strictMatches.length > 0
+      ? strictMatches
+      : findings.filter((finding) => {
+          const findingMessage = finding && typeof finding.message === 'string' ? finding.message : '';
+          const findingSeverity = normalizeSeverity(finding && finding.severity);
+          return findingMessage === targetMessage && findingSeverity === targetSeverity;
+        });
+
+  if (looseMatches.length === 0) {
+    return null;
+  }
+
+  return [...looseMatches].sort(compareFindingsForGroupContext)[0];
+};
+
+const printArrowBlock = (label, text) => {
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    return;
+  }
+
+  process.stdout.write(`${label}\n`);
+  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  lines.forEach((line) => {
+    process.stdout.write(`\u2192 ${line}\n`);
+  });
+  process.stdout.write('\n');
+};
+
+const printDetailedFindingsSection = (input) => {
+  const groupedFindings = Array.isArray(input)
+    ? input
+    : input && Array.isArray(input.groupedFindings)
+      ? input.groupedFindings
+      : [];
+  const findings = input && Array.isArray(input.findings) ? input.findings : [];
+
   process.stdout.write('\u{1F4CB} DETAILED FINDINGS\n');
 
   const visibleGroupedFindings = groupedFindings.slice(0, MAX_PRINTED_GROUPED_ISSUES);
@@ -63,10 +147,39 @@ const printDetailedFindingsSection = (groupedFindings) => {
     const occurrences = Array.isArray(group.occurrences) ? group.occurrences : [];
     const occurrenceCount = Number.isInteger(group.count) && group.count > 0 ? group.count : occurrences.length;
     const visibleOccurrences = occurrences.slice(0, MAX_PRINTED_GROUP_LOCATIONS);
+    const representativeFinding = resolveRepresentativeFinding({
+      group,
+      findings
+    });
+    const primaryOccurrence =
+      visibleOccurrences.length > 0
+        ? visibleOccurrences[0]
+        : representativeFinding && typeof representativeFinding === 'object'
+          ? representativeFinding
+          : {};
+    const primaryFile =
+      typeof primaryOccurrence.file === 'string' && primaryOccurrence.file.trim().length > 0
+        ? primaryOccurrence.file
+        : UNKNOWN_FILE;
+    const primaryLine = normalizeLine(primaryOccurrence.line);
+    const functionName =
+      representativeFinding && typeof representativeFinding.functionName === 'string'
+        ? representativeFinding.functionName.trim()
+        : '';
+    const functionLabel = functionName && functionName !== 'global' ? ` (function: ${functionName})` : '';
+    const impact =
+      representativeFinding && typeof representativeFinding.impact === 'string' ? representativeFinding.impact.trim() : '';
+    const codeSnippet =
+      representativeFinding && typeof representativeFinding.codeSnippet === 'string'
+        ? representativeFinding.codeSnippet.trim()
+        : '';
 
     process.stdout.write(
-      `[${severity}] ${message} (${occurrenceCount} ${occurrenceCount === 1 ? 'occurrence' : 'occurrences'})\n\n`
+      `[${severity}] ${message} (${occurrenceCount} ${occurrenceCount === 1 ? 'occurrence' : 'occurrences'})\n`
     );
+    process.stdout.write(`File: ${formatFileLocation(primaryFile, primaryLine)}${functionLabel}\n\n`);
+    printArrowBlock('Impact:', impact);
+    printArrowBlock('Code:', codeSnippet);
     process.stdout.write('Files:\n');
 
     if (visibleOccurrences.length === 0) {
@@ -80,7 +193,7 @@ const printDetailedFindingsSection = (groupedFindings) => {
     }
 
     if (occurrences.length > MAX_PRINTED_GROUP_LOCATIONS) {
-      process.stdout.write(`* ...and ${occurrences.length - MAX_PRINTED_GROUP_LOCATIONS} more locations\n`);
+      process.stdout.write(`* ...and ${occurrences.length - MAX_PRINTED_GROUP_LOCATIONS} more occurrences\n`);
     }
 
     process.stdout.write('\n');
@@ -100,6 +213,7 @@ const printExecutionSection = (execution) => {
   if (!execution || !execution.attempted) {
     process.stdout.write('Status: \u26A0 skipped\n');
     process.stdout.write('Time: 0 ms\n');
+    process.stdout.write('Execution skipped: no safe runnable entry detected\n');
     const mappedError = execution ? mapExecutionError(execution.error) : '';
     if (mappedError) {
       process.stdout.write(`Error: ${mappedError}\n`);

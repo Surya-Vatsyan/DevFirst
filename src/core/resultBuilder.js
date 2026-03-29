@@ -27,6 +27,7 @@ const CONFIDENCE_PRIORITY = {
   medium: 2,
   low: 1
 };
+const FAIL_ON_VALUES = new Set(['high', 'medium', 'low']);
 const EXECUTION_DECISION_VALUES = new Set(['executed', 'skipped', 'forced-execution']);
 const EXECUTION_CONFIDENCE_VALUES = new Set(['high', 'medium']);
 
@@ -66,6 +67,88 @@ const buildDefaultAiReport = () => ({
   errors: []
 });
 
+const isValidFailOnLevel = (value) => typeof value === 'string' && FAIL_ON_VALUES.has(value.trim().toLowerCase());
+
+const normalizeFailOnLevel = (value) => (isValidFailOnLevel(value) ? value.trim().toLowerCase() : 'high');
+
+const resolveSeverityCounts = (severitySummary) => {
+  const normalizedSummary = severitySummary && typeof severitySummary === 'object' ? severitySummary : {};
+
+  return {
+    high: Number.isInteger(normalizedSummary.high) && normalizedSummary.high > 0 ? normalizedSummary.high : 0,
+    medium: Number.isInteger(normalizedSummary.medium) && normalizedSummary.medium > 0 ? normalizedSummary.medium : 0,
+    low: Number.isInteger(normalizedSummary.low) && normalizedSummary.low > 0 ? normalizedSummary.low : 0
+  };
+};
+
+const resolveHighestPresentSeverity = (severityCounts) => {
+  if (severityCounts.high > 0) {
+    return 'high';
+  }
+
+  if (severityCounts.medium > 0) {
+    return 'medium';
+  }
+
+  if (severityCounts.low > 0) {
+    return 'low';
+  }
+
+  return null;
+};
+
+const resolveTriggeredSeverity = (normalizedFailOn, severityCounts, resolvedIssuesFound) => {
+  if (normalizedFailOn === 'high') {
+    return severityCounts.high > 0 ? 'high' : null;
+  }
+
+  if (normalizedFailOn === 'medium') {
+    if (severityCounts.high > 0) {
+      return 'high';
+    }
+
+    return severityCounts.medium > 0 ? 'medium' : null;
+  }
+
+  if (resolvedIssuesFound <= 0) {
+    return null;
+  }
+
+  return resolveHighestPresentSeverity(severityCounts);
+};
+
+const buildBuildGateDecision = ({ failOn, severitySummary, issuesFound }) => {
+  const normalizedFailOn = normalizeFailOnLevel(failOn);
+  const severityCounts = resolveSeverityCounts(severitySummary);
+  const resolvedIssuesFound =
+    Number.isInteger(issuesFound) && issuesFound >= 0
+      ? issuesFound
+      : severityCounts.high + severityCounts.medium + severityCounts.low;
+  const triggeredSeverity = resolveTriggeredSeverity(normalizedFailOn, severityCounts, resolvedIssuesFound);
+
+  let message = '';
+
+  if (normalizedFailOn === 'high') {
+    message = '\u274C Build blocked: HIGH severity issues detected';
+  } else if (normalizedFailOn === 'medium') {
+    message = '\u274C Build blocked: HIGH or MEDIUM severity issues detected';
+  } else {
+    message = '\u274C Build blocked: issues detected';
+  }
+
+  const shouldFail = triggeredSeverity !== null;
+  const warningMessage = shouldFail ? `\u26A0 ${triggeredSeverity.toUpperCase()} severity issues detected` : '';
+
+  return {
+    failOn: normalizedFailOn,
+    triggeredSeverity,
+    shouldFail,
+    message: shouldFail ? message : '',
+    warningMessage,
+    severity: severityCounts
+  };
+};
+
 const buildSeveritySummary = (findings) => {
   const severitySummary = buildDefaultSeveritySummary();
 
@@ -77,33 +160,200 @@ const buildSeveritySummary = (findings) => {
   return severitySummary;
 };
 
+const normalizeType = (value) =>
+  typeof value === 'string' && value.trim().length > 0 ? value.trim() : 'unknown';
+
+const isValidGroupingCandidate = (finding) => {
+  if (!finding || typeof finding !== 'object' || Array.isArray(finding)) {
+    return false;
+  }
+
+  return typeof finding.message === 'string' && finding.message.trim().length > 0;
+};
+
+const compareSuggestionSelection = (leftCandidate, rightCandidate) => {
+  const leftConfidence = normalizeConfidence(leftCandidate && leftCandidate.confidence);
+  const rightConfidence = normalizeConfidence(rightCandidate && rightCandidate.confidence);
+  const confidenceDelta = CONFIDENCE_PRIORITY[rightConfidence] - CONFIDENCE_PRIORITY[leftConfidence];
+  if (confidenceDelta !== 0) {
+    return confidenceDelta;
+  }
+
+  const leftCount = Number.isInteger(leftCandidate && leftCandidate.count) ? leftCandidate.count : 0;
+  const rightCount = Number.isInteger(rightCandidate && rightCandidate.count) ? rightCandidate.count : 0;
+  const countDelta = rightCount - leftCount;
+  if (countDelta !== 0) {
+    return countDelta;
+  }
+
+  const leftSuggestion = leftCandidate && typeof leftCandidate.suggestion === 'string' ? leftCandidate.suggestion : '';
+  const rightSuggestion = rightCandidate && typeof rightCandidate.suggestion === 'string' ? rightCandidate.suggestion : '';
+  return leftSuggestion.localeCompare(rightSuggestion);
+};
+
+const compareOccurrenceByLocation = (leftOccurrence, rightOccurrence) => {
+  const leftFile = leftOccurrence && typeof leftOccurrence.file === 'string' ? leftOccurrence.file : '';
+  const rightFile = rightOccurrence && typeof rightOccurrence.file === 'string' ? rightOccurrence.file : '';
+  const fileDelta = leftFile.localeCompare(rightFile);
+  if (fileDelta !== 0) {
+    return fileDelta;
+  }
+
+  const lineDelta = normalizeLineNumber(leftOccurrence && leftOccurrence.line) - normalizeLineNumber(rightOccurrence && rightOccurrence.line);
+  if (lineDelta !== 0) {
+    return lineDelta;
+  }
+
+  const leftContext = leftOccurrence && typeof leftOccurrence.context === 'string' ? leftOccurrence.context : '';
+  const rightContext = rightOccurrence && typeof rightOccurrence.context === 'string' ? rightOccurrence.context : '';
+  return leftContext.localeCompare(rightContext);
+};
+
+const resolveFirstOccurrence = (group) => {
+  if (!group || !Array.isArray(group.occurrences) || group.occurrences.length === 0) {
+    return null;
+  }
+
+  let firstOccurrence = group.occurrences[0];
+  for (let index = 1; index < group.occurrences.length; index += 1) {
+    const currentOccurrence = group.occurrences[index];
+    if (compareOccurrenceByLocation(currentOccurrence, firstOccurrence) < 0) {
+      firstOccurrence = currentOccurrence;
+    }
+  }
+
+  return firstOccurrence;
+};
+
+const compareFindingsForPriority = (leftFinding, rightFinding) => {
+  const leftSeverity = normalizeSeverity(leftFinding.severity);
+  const rightSeverity = normalizeSeverity(rightFinding.severity);
+  const severityDelta = SEVERITY_PRIORITY[rightSeverity] - SEVERITY_PRIORITY[leftSeverity];
+  if (severityDelta !== 0) {
+    return severityDelta;
+  }
+
+  const leftConfidence = normalizeConfidence(leftFinding.confidence);
+  const rightConfidence = normalizeConfidence(rightFinding.confidence);
+  const confidenceDelta = CONFIDENCE_PRIORITY[rightConfidence] - CONFIDENCE_PRIORITY[leftConfidence];
+  if (confidenceDelta !== 0) {
+    return confidenceDelta;
+  }
+
+  const leftFile = typeof leftFinding.file === 'string' ? leftFinding.file : '';
+  const rightFile = typeof rightFinding.file === 'string' ? rightFinding.file : '';
+  const fileDelta = leftFile.localeCompare(rightFile);
+  if (fileDelta !== 0) {
+    return fileDelta;
+  }
+
+  const lineDelta = normalizeLineNumber(leftFinding.line) - normalizeLineNumber(rightFinding.line);
+  if (lineDelta !== 0) {
+    return lineDelta;
+  }
+
+  const leftMessage = typeof leftFinding.message === 'string' ? leftFinding.message : '';
+  const rightMessage = typeof rightFinding.message === 'string' ? rightFinding.message : '';
+  const messageDelta = leftMessage.localeCompare(rightMessage);
+  if (messageDelta !== 0) {
+    return messageDelta;
+  }
+
+  const leftType = normalizeType(leftFinding.type);
+  const rightType = normalizeType(rightFinding.type);
+  const typeDelta = leftType.localeCompare(rightType);
+  if (typeDelta !== 0) {
+    return typeDelta;
+  }
+
+  const leftSuggestion = typeof leftFinding.suggestion === 'string' ? leftFinding.suggestion : '';
+  const rightSuggestion = typeof rightFinding.suggestion === 'string' ? rightFinding.suggestion : '';
+  const suggestionDelta = leftSuggestion.localeCompare(rightSuggestion);
+  if (suggestionDelta !== 0) {
+    return suggestionDelta;
+  }
+
+  const leftFunctionName = typeof leftFinding.functionName === 'string' ? leftFinding.functionName : 'global';
+  const rightFunctionName = typeof rightFinding.functionName === 'string' ? rightFinding.functionName : 'global';
+  const functionNameDelta = leftFunctionName.localeCompare(rightFunctionName);
+  if (functionNameDelta !== 0) {
+    return functionNameDelta;
+  }
+
+  const leftContext = typeof leftFinding.context === 'string' ? leftFinding.context : '';
+  const rightContext = typeof rightFinding.context === 'string' ? rightFinding.context : '';
+  return leftContext.localeCompare(rightContext);
+};
+
+const compareGroupedFindingsForOutput = (leftGroup, rightGroup) => {
+  const severityDelta =
+    SEVERITY_PRIORITY[normalizeSeverity(rightGroup.severity)] - SEVERITY_PRIORITY[normalizeSeverity(leftGroup.severity)];
+  if (severityDelta !== 0) {
+    return severityDelta;
+  }
+
+  const countDelta = rightGroup.count - leftGroup.count;
+  if (countDelta !== 0) {
+    return countDelta;
+  }
+
+  const confidenceDelta =
+    CONFIDENCE_PRIORITY[normalizeConfidence(rightGroup.confidence)] -
+    CONFIDENCE_PRIORITY[normalizeConfidence(leftGroup.confidence)];
+  if (confidenceDelta !== 0) {
+    return confidenceDelta;
+  }
+
+  const firstOccurrenceDelta = compareOccurrenceByLocation(leftGroup._firstOccurrence, rightGroup._firstOccurrence);
+  if (firstOccurrenceDelta !== 0) {
+    return firstOccurrenceDelta;
+  }
+
+  const leftMessage = typeof leftGroup.message === 'string' ? leftGroup.message : '';
+  const rightMessage = typeof rightGroup.message === 'string' ? rightGroup.message : '';
+  const messageDelta = leftMessage.localeCompare(rightMessage);
+  if (messageDelta !== 0) {
+    return messageDelta;
+  }
+
+  const leftSuggestion = typeof leftGroup.suggestion === 'string' ? leftGroup.suggestion : '';
+  const rightSuggestion = typeof rightGroup.suggestion === 'string' ? rightGroup.suggestion : '';
+  return leftSuggestion.localeCompare(rightSuggestion);
+};
+
+const compareGroupedFindingsForTopRisks = (leftGroup, rightGroup) => {
+  const severityDelta =
+    SEVERITY_PRIORITY[normalizeSeverity(rightGroup.severity)] - SEVERITY_PRIORITY[normalizeSeverity(leftGroup.severity)];
+  if (severityDelta !== 0) {
+    return severityDelta;
+  }
+
+  const confidenceDelta =
+    CONFIDENCE_PRIORITY[normalizeConfidence(rightGroup.confidence)] -
+    CONFIDENCE_PRIORITY[normalizeConfidence(leftGroup.confidence)];
+  if (confidenceDelta !== 0) {
+    return confidenceDelta;
+  }
+
+  const firstOccurrenceDelta = compareOccurrenceByLocation(leftGroup._firstOccurrence, rightGroup._firstOccurrence);
+  if (firstOccurrenceDelta !== 0) {
+    return firstOccurrenceDelta;
+  }
+
+  const leftMessage = typeof leftGroup.message === 'string' ? leftGroup.message : '';
+  const rightMessage = typeof rightGroup.message === 'string' ? rightGroup.message : '';
+  const messageDelta = leftMessage.localeCompare(rightMessage);
+  if (messageDelta !== 0) {
+    return messageDelta;
+  }
+
+  const leftSuggestion = typeof leftGroup.suggestion === 'string' ? leftGroup.suggestion : '';
+  const rightSuggestion = typeof rightGroup.suggestion === 'string' ? rightGroup.suggestion : '';
+  return leftSuggestion.localeCompare(rightSuggestion);
+};
+
 const sortFindingsByPriority = (findings) =>
-  [...findings].sort((leftFinding, rightFinding) => {
-    const leftSeverity = normalizeSeverity(leftFinding.severity);
-    const rightSeverity = normalizeSeverity(rightFinding.severity);
-    const severityDelta = SEVERITY_PRIORITY[rightSeverity] - SEVERITY_PRIORITY[leftSeverity];
-    if (severityDelta !== 0) {
-      return severityDelta;
-    }
-
-    const leftConfidence = normalizeConfidence(leftFinding.confidence);
-    const rightConfidence = normalizeConfidence(rightFinding.confidence);
-    const confidenceDelta = CONFIDENCE_PRIORITY[rightConfidence] - CONFIDENCE_PRIORITY[leftConfidence];
-    if (confidenceDelta !== 0) {
-      return confidenceDelta;
-    }
-
-    const leftFile = typeof leftFinding.file === 'string' ? leftFinding.file : '';
-    const rightFile = typeof rightFinding.file === 'string' ? rightFinding.file : '';
-    const fileDelta = leftFile.localeCompare(rightFile);
-    if (fileDelta !== 0) {
-      return fileDelta;
-    }
-
-    const leftMessage = typeof leftFinding.message === 'string' ? leftFinding.message : '';
-    const rightMessage = typeof rightFinding.message === 'string' ? rightFinding.message : '';
-    return leftMessage.localeCompare(rightMessage);
-  });
+  [...findings].sort(compareFindingsForPriority);
 
 const buildFindingsBySeverity = (findings) => {
   const groupedFindings = {
@@ -153,44 +403,45 @@ const isIgnoredFindingFile = (filePath) => {
 };
 
 const buildGroupedFindings = (findings) => {
-  const groupedFindingsMap = new Map();
+  if (!Array.isArray(findings) || findings.length === 0) {
+    return [];
+  }
+
+  const exactGroupedFindingsMap = new Map();
 
   for (const finding of findings) {
+    if (!isValidGroupingCandidate(finding)) {
+      continue;
+    }
+
     const normalized = normalizeFinding(finding);
     if (isIgnoredFindingFile(normalized.file)) {
       continue;
     }
 
-    const groupingKey = `${normalized.message}|${normalized.suggestion}`;
-    if (!groupedFindingsMap.has(groupingKey)) {
-      groupedFindingsMap.set(groupingKey, {
+    const exactGroupingKey = `${normalized.message}|${normalized.severity}|${normalized.suggestion}`;
+    if (!exactGroupedFindingsMap.has(exactGroupingKey)) {
+      exactGroupedFindingsMap.set(exactGroupingKey, {
         message: normalized.message,
         severity: normalized.severity,
         confidence: normalized.confidence,
         suggestion: normalized.suggestion,
         occurrences: [],
-        count: 0,
         _occurrenceSet: new Set()
       });
     }
 
-    const group = groupedFindingsMap.get(groupingKey);
-    const groupSeverity = normalizeSeverity(group.severity);
-    const findingSeverity = normalizeSeverity(normalized.severity);
-    if (SEVERITY_PRIORITY[findingSeverity] > SEVERITY_PRIORITY[groupSeverity]) {
-      group.severity = findingSeverity;
-    }
-
-    const groupConfidence = normalizeConfidence(group.confidence);
+    const exactGroup = exactGroupedFindingsMap.get(exactGroupingKey);
+    const groupConfidence = normalizeConfidence(exactGroup.confidence);
     const findingConfidence = normalizeConfidence(normalized.confidence);
     if (CONFIDENCE_PRIORITY[findingConfidence] > CONFIDENCE_PRIORITY[groupConfidence]) {
-      group.confidence = findingConfidence;
+      exactGroup.confidence = findingConfidence;
     }
 
     const occurrenceSignature = `${normalized.file}|${normalized.line}|${normalized.context}`;
-    if (!group._occurrenceSet.has(occurrenceSignature)) {
-      group._occurrenceSet.add(occurrenceSignature);
-      group.occurrences.push({
+    if (!exactGroup._occurrenceSet.has(occurrenceSignature)) {
+      exactGroup._occurrenceSet.add(occurrenceSignature);
+      exactGroup.occurrences.push({
         file: normalized.file,
         line: normalized.line,
         context: normalized.context
@@ -198,17 +449,81 @@ const buildGroupedFindings = (findings) => {
     }
   }
 
-  const groupedFindings = Array.from(groupedFindingsMap.values()).map((group) => {
-    const occurrences = [...group.occurrences].sort((leftOccurrence, rightOccurrence) => {
-      const leftFile = typeof leftOccurrence.file === 'string' ? leftOccurrence.file : '';
-      const rightFile = typeof rightOccurrence.file === 'string' ? rightOccurrence.file : '';
-      const fileDelta = leftFile.localeCompare(rightFile);
-      if (fileDelta !== 0) {
-        return fileDelta;
-      }
+  const mergedGroupedFindingsMap = new Map();
+  const exactGroups = Array.from(exactGroupedFindingsMap.values()).sort((leftGroup, rightGroup) => {
+    const leftMessage = typeof leftGroup.message === 'string' ? leftGroup.message : '';
+    const rightMessage = typeof rightGroup.message === 'string' ? rightGroup.message : '';
+    const messageDelta = leftMessage.localeCompare(rightMessage);
+    if (messageDelta !== 0) {
+      return messageDelta;
+    }
 
-      return normalizeLineNumber(leftOccurrence.line) - normalizeLineNumber(rightOccurrence.line);
-    });
+    const leftSeverity = normalizeSeverity(leftGroup.severity);
+    const rightSeverity = normalizeSeverity(rightGroup.severity);
+    const severityDelta = SEVERITY_PRIORITY[rightSeverity] - SEVERITY_PRIORITY[leftSeverity];
+    if (severityDelta !== 0) {
+      return severityDelta;
+    }
+
+    const leftSuggestion = typeof leftGroup.suggestion === 'string' ? leftGroup.suggestion : '';
+    const rightSuggestion = typeof rightGroup.suggestion === 'string' ? rightGroup.suggestion : '';
+    return leftSuggestion.localeCompare(rightSuggestion);
+  });
+
+  for (const exactGroup of exactGroups) {
+    const mergedGroupingKey = `${exactGroup.message}|${exactGroup.severity}`;
+    if (!mergedGroupedFindingsMap.has(mergedGroupingKey)) {
+      mergedGroupedFindingsMap.set(mergedGroupingKey, {
+        message: exactGroup.message,
+        severity: normalizeSeverity(exactGroup.severity),
+        confidence: normalizeConfidence(exactGroup.confidence),
+        suggestion: exactGroup.suggestion,
+        occurrences: [],
+        _occurrenceSet: new Set(),
+        _selectedSuggestionMeta: {
+          suggestion: exactGroup.suggestion,
+          confidence: normalizeConfidence(exactGroup.confidence),
+          count: Array.isArray(exactGroup.occurrences) ? exactGroup.occurrences.length : 0
+        }
+      });
+    }
+
+    const mergedGroup = mergedGroupedFindingsMap.get(mergedGroupingKey);
+
+    const mergedGroupConfidence = normalizeConfidence(mergedGroup.confidence);
+    const exactGroupConfidence = normalizeConfidence(exactGroup.confidence);
+    if (CONFIDENCE_PRIORITY[exactGroupConfidence] > CONFIDENCE_PRIORITY[mergedGroupConfidence]) {
+      mergedGroup.confidence = exactGroupConfidence;
+    }
+
+    const candidateSuggestionMeta = {
+      suggestion: exactGroup.suggestion,
+      confidence: exactGroupConfidence,
+      count: Array.isArray(exactGroup.occurrences) ? exactGroup.occurrences.length : 0
+    };
+
+    if (compareSuggestionSelection(candidateSuggestionMeta, mergedGroup._selectedSuggestionMeta) < 0) {
+      mergedGroup._selectedSuggestionMeta = candidateSuggestionMeta;
+      mergedGroup.suggestion = candidateSuggestionMeta.suggestion;
+    }
+
+    for (const occurrence of Array.isArray(exactGroup.occurrences) ? exactGroup.occurrences : []) {
+      const occurrenceSignature = `${occurrence.file}|${occurrence.line}|${occurrence.context}`;
+      if (!mergedGroup._occurrenceSet.has(occurrenceSignature)) {
+        mergedGroup._occurrenceSet.add(occurrenceSignature);
+        mergedGroup.occurrences.push({
+          file: occurrence.file,
+          line: occurrence.line,
+          context: occurrence.context
+        });
+      }
+    }
+  }
+
+  const groupedFindings = Array.from(mergedGroupedFindingsMap.values()).map((group) => {
+    const occurrences = [...group.occurrences].sort((leftOccurrence, rightOccurrence) =>
+      compareOccurrenceByLocation(leftOccurrence, rightOccurrence)
+    );
 
     return {
       message: group.message,
@@ -220,29 +535,13 @@ const buildGroupedFindings = (findings) => {
     };
   });
 
-  return groupedFindings.sort((leftGroup, rightGroup) => {
-    const severityDelta =
-      SEVERITY_PRIORITY[normalizeSeverity(rightGroup.severity)] - SEVERITY_PRIORITY[normalizeSeverity(leftGroup.severity)];
-    if (severityDelta !== 0) {
-      return severityDelta;
-    }
+  const groupedFindingsWithFirstOccurrence = groupedFindings.map((group) => ({
+    ...group,
+    _firstOccurrence: resolveFirstOccurrence(group)
+  }));
 
-    const countDelta = rightGroup.count - leftGroup.count;
-    if (countDelta !== 0) {
-      return countDelta;
-    }
-
-    const confidenceDelta =
-      CONFIDENCE_PRIORITY[normalizeConfidence(rightGroup.confidence)] -
-      CONFIDENCE_PRIORITY[normalizeConfidence(leftGroup.confidence)];
-    if (confidenceDelta !== 0) {
-      return confidenceDelta;
-    }
-
-    const leftMessage = typeof leftGroup.message === 'string' ? leftGroup.message : '';
-    const rightMessage = typeof rightGroup.message === 'string' ? rightGroup.message : '';
-    return leftMessage.localeCompare(rightMessage);
-  });
+  const sortedGroupedFindings = groupedFindingsWithFirstOccurrence.sort(compareGroupedFindingsForOutput);
+  return sortedGroupedFindings.map(({ _firstOccurrence, ...group }) => group);
 };
 
 const buildTopRisks = (groupedFindings) => {
@@ -250,12 +549,15 @@ const buildTopRisks = (groupedFindings) => {
     return [];
   }
 
-  const highGroups = groupedFindings.filter((group) => normalizeSeverity(group.severity) === 'high');
-  const mediumGroups = groupedFindings.filter((group) => normalizeSeverity(group.severity) === 'medium');
+  const groupedFindingsWithFirstOccurrence = groupedFindings.map((group) => ({
+    ...group,
+    _firstOccurrence: resolveFirstOccurrence(group)
+  }));
 
-  const targetGroups = highGroups.length > 0 ? highGroups : mediumGroups.length > 0 ? mediumGroups : groupedFindings;
-  return targetGroups.slice(0, 3).map((group) => {
-    const firstOccurrence = Array.isArray(group.occurrences) && group.occurrences.length > 0 ? group.occurrences[0] : null;
+  const prioritizedGroups = groupedFindingsWithFirstOccurrence.sort(compareGroupedFindingsForTopRisks);
+
+  return prioritizedGroups.slice(0, 3).map((group) => {
+    const firstOccurrence = group._firstOccurrence;
     const reason =
       firstOccurrence && typeof firstOccurrence.context === 'string' && firstOccurrence.context.trim().length > 0
         ? firstOccurrence.context
@@ -301,6 +603,10 @@ const dedupeFindings = (findings) => {
   const seenSignatures = new Set();
 
   for (const finding of findings) {
+    if (!isValidGroupingCandidate(finding)) {
+      continue;
+    }
+
     const normalizedFinding = normalizeFinding(finding);
     const signature = getExecutionFindingSignature(normalizedFinding);
     if (seenSignatures.has(signature)) {
@@ -479,6 +785,9 @@ module.exports = {
   buildDefaultSummary,
   buildDefaultExecution,
   buildDefaultAiReport,
+  isValidFailOnLevel,
+  normalizeFailOnLevel,
+  buildBuildGateDecision,
   buildSeveritySummary,
   sortFindingsByPriority,
   buildGroupedFindings,

@@ -3,3 +3,5 @@ node_modules/
 upload/
 reports/*.json
 !reports/.gitkeep
+DEVGUARD-Rules.md
+DEVGUARD_RULES.md
