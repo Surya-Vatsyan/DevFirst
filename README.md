@@ -1,6 +1,6 @@
-# DevGuard
+# DevFirst
 
-DevGuard is a security-focused JavaScript/TypeScript analysis platform with:
+DevFirst is a security-focused JavaScript/TypeScript analysis platform with:
 
 - an HTTP API for ZIP-based project scanning
 - a production-ready CLI for local and CI/CD usage
